@@ -1,0 +1,5 @@
+dataset_label,row_count,processing_time_sec,alert_generation_sec,api_response_sec,chainage_query_sec,alert_count
+1k_TEMP_DEVONLY,1000,0.0022,0.0005,,0.0,385
+10k_TEMP_DEVONLY,10000,0.0167,0.0072,,0.0004,3686
+50k_TEMP_DEVONLY,50000,0.1044,0.0401,,0.0022,18680
+100k_TEMP_DEVONLY,100000,0.255,0.12,,0.005,36900

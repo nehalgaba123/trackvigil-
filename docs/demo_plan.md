@@ -4,6 +4,15 @@ Rough draft. This gets more concrete as backend/analytics come online —
 right now it's the skeleton so nothing gets forgotten under time pressure
 on demo day. Update the `[TBD]` markers as real pieces land.
 
+**Status as of Aug 22 (Person 5):** the CSV upload → Dashboard → Trend
+Projection → Report flow works end-to-end against real uploaded
+historical multi-date data — this is the confirmed-working core of the
+live demo right now. `backend/` and `analytics/` still don't exist, so
+there is **no live API** yet; everything currently runs client-side off
+the uploaded CSV. Maintenance Priority List status is not confirmed as
+of this update — check with Person 1 before assuming row 5 below is
+ready.
+
 ---
 
 ## 1. The pitch (30 seconds, memorize this)
@@ -24,15 +33,21 @@ trend analysis." Never say "AI."** (team rule — judges may probe this)
 
 ## 2. Demo flow — what gets shown, in order
 
-| # | Screen/action | What you say | Who presents |
-|---|---|---|---|
-| 1 | Upload/data view | "Here's real/synthetic TRC data being ingested — [TBD: real or synthetic, must say correctly]" | [TBD] |
-| 2 | Dashboard overview | "Every 100m of track, 6 parameters, live severity coloring" | [TBD] |
-| 3 | An alert / chainage drill-down | "Here's a section that's crossed the critical threshold for cross-level — here's exactly where and by how much" | [TBD] |
-| 4 | TrendView | "This section isn't just bad now — it's getting worse. Based on the rate of change, we estimate it reaches critical in ~X days" | [TBD] |
-| 5 | Maintenance Priority List | "All flagged sections, ranked by urgency — this is the actionable output" | [TBD] |
-| 6 | Scalability numbers | "Tested at 1k up to 100k readings — here's how processing time holds up" | You (Person 5) |
-| 7 | Close | Restate the pitch, mention what's threshold-based vs. statistical, invite questions | [TBD] |
+| # | Screen/action | What you say | Status | Who presents |
+|---|---|---|---|---|
+| 1 | CSV upload | "Here's real/synthetic TRC data being ingested — [TBD: real or synthetic, must say correctly]" | ✅ works | [TBD] |
+| 2 | Dashboard overview | "Every 100m of track, 6 parameters, live severity coloring" | ✅ works | [TBD] |
+| 3 | An alert / chainage drill-down | "Here's a section that's crossed the critical threshold for cross-level — here's exactly where and by how much" | ✅ works (part of Dashboard) | [TBD] |
+| 4 | Trend Projection | "This section isn't just bad now — it's getting worse. Based on the rate of change, we estimate it reaches critical in ~X days" | ✅ works, driven by uploaded historical dates | [TBD] |
+| 5 | Report | "Exports/summarizes the current inspection pass" | ✅ works | [TBD] |
+| 6 | Maintenance Priority List | "All flagged sections, ranked by urgency — this is the actionable output" | ❓ not confirmed — check with Person 1 before including | [TBD] |
+| 7 | Scalability numbers | "Tested at 1k up to 100k readings — here's how processing time holds up" | 🟡 harness proven, real sized-data numbers still pending Person 3 (see `results/scalability_results.csv`) | You (Person 5) |
+| 8 | Close | Restate the pitch, mention what's threshold-based vs. statistical, invite questions | — | [TBD] |
+
+**Note:** there is currently no live backend, so the whole live-clicking
+part of the demo (rows 1–6) runs off a CSV uploaded directly into the
+frontend — there's no separate "is the backend up" risk yet, but there's
+also no server-side analytics to point to if asked what's computed where.
 
 **Not decided yet:** who presents which section — worth assigning this
 once the frontend is stable enough to rehearse against.
@@ -53,8 +68,14 @@ Hackathon wifi/laptops fail — have a plan before it happens, not during:
 - [ ] Screen-recorded backup video of the full flow, made the night before
 - [ ] Screenshots of every key screen (dashboard, alert, trend, priority
       list) saved locally, not just cloud
-- [ ] If backend is down: fall back to explaining the architecture
-      diagram (`docs/architecture.md`) instead of live-clicking through it
+- [ ] Since there's no backend yet, the live demo depends on the CSV
+      upload working on the demo laptop — have `cleaned_data.csv` saved
+      locally (not just cloud) as the upload file, and rehearse the
+      upload step specifically, not just the views after it
+- [ ] If upload/frontend fails live: fall back to explaining the
+      architecture diagram (`docs/architecture.md`) instead of
+      live-clicking through it. Once backend exists, add "if backend is
+      down" as a separate fallback case.
 - [ ] Know in advance: is there a deployed/hosted version, or does this
       only run on one laptop? [TBD — confirm with Person 1/2]
 
@@ -75,8 +96,11 @@ Hackathon wifi/laptops fail — have a plan before it happens, not during:
   actual measured times at 100k rows.
 - **"What happens with missing/bad sensor data?"** → [TBD — confirm
   with Person 3/4 how gaps and invalid readings are actually handled]
-- **"Why these threshold values?"** → Point to IRPWM sourcing in
-  `docs/threshold_validation.md` (once written).
+- **"Why these threshold values?"** → `docs/threshold_validation.md`
+  exists now but is still a stub — IRPWM (or another standard) hasn't
+  been sourced yet. If asked before that's done, say so honestly:
+  representative/illustrative values for the prototype, pending formal
+  validation.
 
 ## 6. Things to NOT say or show
 

@@ -4,10 +4,13 @@ This is the **single source of truth** for field names, formats, and thresholds
 across the pipeline. If your module doesn't match this doc, it's wrong — fix
 your module, don't fix the doc without telling the team.
 
-Status as of Aug 22: repo (`trackvigil--main`) currently contains **only the
-Person 1 frontend prototype**, running entirely on in-browser mock data
-(`generateDataset()` in `RailTrackDashboard.jsx`). `backend/`, `data/`,
-`analytics/`, `tests/`, `docs/` do not exist yet at repo root.
+Status as of Aug 22 (updated, Person 5): repo (`trackvigil--main`) contains
+the Person 1 frontend, `docs/`, `tests/`, and `results/`. The frontend is
+**no longer mock-only** — CSV upload works against the locked schema below,
+and the Dashboard, Trend Projection, and Report views all run against real
+uploaded historical multi-date data (verified with the 43,272-row,
+12-date `cleaned_data.csv`). `backend/`, `data/`, `analytics/` still do not
+exist at repo root as of this update — no API, no server-side analytics yet.
 
 ---
 
@@ -86,6 +89,22 @@ to be written down the moment Person 2 has a working stub — even with fake
 data — so Person 1 isn't reverse-engineering it from network tab.
 *(Placeholder — fill in once Person 2 shares response shapes.)*
 
+## 5b. Trend/history data (frontend, current state)
+
+`src/lib/trackDataService.js` now supports generic uploaded historical
+trends: uploading a CSV with multiple `date` values for the same
+`chainage`/`parameter` drives the Trend Projection and Report views,
+not just a fixed set of hardcoded demo sections. Confirmed working
+against `cleaned_data.csv` (601 chainage points × 12 dates).
+
+**Not yet re-verified by Person 5 at the code level** — this entry
+reflects what the team has reported as working, not a line-by-line
+review of the updated `trackDataService.js` (out of scope for this
+doc/test pass per team rules — `src/` is Person 1's folder). If the
+exact trend calculation (moving average / regression / other) needs to
+be documented precisely, that should come from Person 1 directly so
+this doc doesn't guess at someone else's implementation.
+
 ## 6. Pipeline
 
 ```
@@ -116,14 +135,26 @@ Frontend-compatible format (matches what Person 1's components expect)
 
 ## 7. Open items / known gaps (as of Aug 22)
 
-- [ ] Repo root doesn't yet have `backend/`, `data/`, `analytics/`,
-      `tests/`, `docs/` folders — needs to be set up before parallel work
-      starts colliding.
+- [x] `tests/`, `docs/`, `results/` folders exist and are populated
+      (this doc, architecture, demo plan, integration checklist,
+      benchmark/scalability scripts, benchmark/scalability results).
+- [ ] `backend/`, `data/`, `analytics/` folders still not created at
+      repo root — no live API, no server-side alert/trend engine yet.
+      Frontend currently does its own CSV parsing + trend logic
+      client-side (`src/lib/trackDataService.js`) as a stand-in.
+- [x] Frontend CSV upload now works against this locked schema —
+      Dashboard, Trend Projection, and Report views all run against
+      uploaded historical multi-date data, not just `generateDataset()`
+      mock data. Mock data is now a fallback, not the only path.
 - [ ] `MaintenancePriorityList.jsx` not built yet (Person 1 task, spec'd
       in team rules doc).
 - [ ] No data-source/status indicator in UI yet (real vs. fallback/demo
       data) — required for judges.
-- [ ] `date` format not yet confirmed with Person 3.
+- [x] `date` format confirmed 2026-08-22: `YYYY-MM-DD`, 12 distinct
+      monthly dates present in the shared `cleaned_data.csv`
+      (2025-10-19 → 2026-09-25) — trend calculations are **not** blocked
+      the way this doc previously assumed. **Flag for Person 3:** the
+      newest date (2026-09-25) is after today — confirm intentional.
 - [ ] `/tracks`, `/alerts`, `/analytics`, `/priority` response shapes not
       yet documented — TODO once Person 2 has a stub.
 - [ ] Thresholds table above needs IRPWM validation from Person 4 —

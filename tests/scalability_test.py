@@ -54,9 +54,14 @@ def generate_temp_csv(path, target_rows):
     of just extending chainage indefinitely — to hit larger row counts
     without violating that range, it adds more DATES instead (one full
     0-60km sweep per date). This also means temp data can double as a
-    stand-in for testing trend/degradation logic later, since it won't
-    have the same "only one date" problem as the real cleaned_data.csv
-    sample currently does.
+    stand-in for testing trend/degradation logic later.
+
+    NOTE (updated Aug 22): the real `cleaned_data.csv` no longer has the
+    "only one date" limitation this comment used to describe — it now
+    has 12 monthly dates and the frontend's Trend Projection/Report
+    views run against it directly. This generator is still useful for
+    sizes Person 3 hasn't produced yet (1k/10k/50k/100k), just not for
+    the single-date reason originally noted here.
     """
     params = sorted(LOCKED_PARAMS)
     chainages = []
