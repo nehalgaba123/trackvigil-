@@ -8,6 +8,10 @@ import {
   MapPin, Clock, Filter, ArrowUpDown, X, RotateCcw, FileCheck2, Ruler, Waves,
   RefreshCw, Activity, ArrowLeftRight, TrendingDown, Radio, ChevronDown, Printer,
 } from "lucide-react";
+import {
+  PARAM_KEYS, DEFAULT_THRESHOLDS, CHAINAGE_START, CHAINAGE_END, STEP,
+  loadSampleDataset, loadFromUpload,
+} from "./lib/trackDataService";
 
 /* ============================================================================
    DESIGN TOKENS
@@ -40,11 +44,10 @@ const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=IBM+P
 
 /* ============================================================================
    DOMAIN CONSTANTS
+   Locked schema (chainage/date/parameter/value) and the 6 parameter keys
+   now live in ./lib/trackDataService.js — this file only owns UI-facing
+   metadata (labels, icons, units) keyed off the same PARAM_KEYS.
    ============================================================================ */
-const CHAINAGE_START = 0;
-const CHAINAGE_END = 60;
-const STEP = 0.1; // 100m resolution
-
 const PARAM_META = {
   gauge: { label: "Gauge", short: "GAU", unit: "mm", nominal: 1676, icon: Ruler, desc: "Distance between rail faces (nominal 1676mm broad gauge)" },
   alignment: { label: "Alignment", short: "ALN", unit: "mm", nominal: 0, icon: Waves, desc: "Lateral deviation of rail from design line (versine)" },
@@ -53,65 +56,14 @@ const PARAM_META = {
   crossLevel: { label: "Cross-Level", short: "XLV", unit: "mm", nominal: 0, icon: ArrowLeftRight, desc: "Relative height difference between the two rails" },
   railWear: { label: "Rail Wear", short: "WER", unit: "mm", nominal: 0, icon: TrendingDown, desc: "Vertical + lateral material loss on the rail head" },
 };
-const PARAM_KEYS = Object.keys(PARAM_META);
-const PARAM_SEED = { gauge: 0.4, alignment: 1.3, twist: 2.6, unevenness: 3.9, crossLevel: 5.2, railWear: 6.5 };
-
-const DEFAULT_THRESHOLDS = {
-  gauge: { warning: 5, critical: 9 },
-  alignment: { warning: 5, critical: 10 },
-  twist: { warning: 4, critical: 7 },
-  unevenness: { warning: 8, critical: 13 },
-  crossLevel: { warning: 6, critical: 10 },
-  railWear: { warning: 8, critical: 12 },
-};
-
-const CLUSTERS = [
-  { id: "c1", param: "gauge", center: 12.4, width: 0.55, peakSeverity: "critical", label: "Gauge widening — curve exit", zone: "Sector A" },
-  { id: "c2", param: "alignment", center: 27.8, width: 0.9, peakSeverity: "warning", label: "Alignment drift — embankment", zone: "Sector B" },
-  { id: "c3", param: "crossLevel", center: 41.2, width: 0.4, peakSeverity: "critical", label: "Cross-level fault — level crossing", zone: "Sector C" },
-  { id: "c4", param: "railWear", center: 8.1, width: 1.2, peakSeverity: "warning", label: "Rail wear zone — high-tonnage section", zone: "Sector D" },
-  { id: "c5", param: "twist", center: 52.6, width: 0.5, peakSeverity: "critical", label: "Twist fault — sharp curve", zone: "Sector E" },
-  { id: "c6", param: "unevenness", center: 35.0, width: 0.7, peakSeverity: "warning", label: "Unevenness patch — bridge approach", zone: "Sector F" },
-];
 
 /* ============================================================================
-   PURE HELPERS
+   PURE HELPERS (threshold-based monitoring / anomaly detection utilities)
+   These operate on whatever readings array is loaded — sample or uploaded —
+   so they are reused unchanged regardless of data source.
    ============================================================================ */
-function mulberry32(seed) {
-  let a = seed;
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const fmt = (v, d = 1) => (Math.round(v * 10 ** d) / 10 ** d).toFixed(d);
-
-function generateDataset() {
-  const rand = mulberry32(42);
-  const n = Math.round((CHAINAGE_END - CHAINAGE_START) / STEP) + 1;
-  const points = [];
-  for (let i = 0; i < n; i++) {
-    const chainage = +(CHAINAGE_START + i * STEP).toFixed(1);
-    const reading = { chainage };
-    PARAM_KEYS.forEach((param) => {
-      const warn = DEFAULT_THRESHOLDS[param].warning;
-      const crit = DEFAULT_THRESHOLDS[param].critical;
-      let base = warn * 0.20 * (0.5 + 0.5 * Math.sin(chainage * 0.31 + PARAM_SEED[param] * 3)) + warn * 0.16 * rand();
-      let bump = 0;
-      CLUSTERS.filter((c) => c.param === param).forEach((c) => {
-        const target = c.peakSeverity === "critical" ? crit * 1.18 : warn * 1.32;
-        const g = Math.exp(-((chainage - c.center) ** 2) / (2 * c.width * c.width));
-        bump += (target - base) * g;
-      });
-      reading[param] = Math.max(0, +(base + bump).toFixed(2));
-    });
-    points.push(reading);
-  }
-  return points;
-}
 
 function getSeverity(param, value, thresholds) {
   const t = thresholds[param];
@@ -171,22 +123,6 @@ function computeAlerts(readings, thresholds) {
 function nearestReading(readings, chainage) {
   const idx = clamp(Math.round((chainage - CHAINAGE_START) / STEP), 0, readings.length - 1);
   return readings[idx];
-}
-
-function generateTrendHistories(readings) {
-  const rand = mulberry32(99);
-  const now = new Date(2026, 7, 1); // Aug 2026
-  return CLUSTERS.map((c) => {
-    const current = nearestReading(readings, c.center)[c.param];
-    const growth = current * 0.085;
-    const history = [];
-    for (let m = -7; m <= 0; m++) {
-      const value = Math.max(0, current + growth * m + (rand() - 0.5) * current * 0.10);
-      const d = new Date(now.getFullYear(), now.getMonth() + m, 1);
-      history.push({ m, label: d.toLocaleString("en-US", { month: "short" }), value: +value.toFixed(2) });
-    }
-    return { ...c, history, growth, current };
-  });
 }
 
 function linearRegression(points) {
@@ -669,57 +605,110 @@ function ThresholdsDrawer({ open, onClose, thresholds, setThresholds }) {
 /* ============================================================================
    UPLOAD / INGEST VIEW
    ============================================================================ */
-function UploadView({ onDone }) {
-  const [stage, setStage] = useState("idle"); // idle | dragging | processing | done
+function UploadView({ onDatasetReady }) {
+  const [stage, setStage] = useState("idle"); // idle | dragging | processing | done | error
   const [counts, setCounts] = useState({ processed: 0, flagged: 0, accepted: 0 });
-  const targets = { total: 612, flagged: 7 };
+  const [result, setResult] = useState(null); // full { readings, trendSections, validation, meta }
+  const [errorMsg, setErrorMsg] = useState("");
+  const fileInputRef = useRef(null);
+
+  const targets = result
+    ? { total: result.validation.total, flagged: result.validation.invalidCount }
+    : { total: 0, flagged: 0 };
 
   useEffect(() => {
-    if (stage !== "processing") return;
+    if (stage !== "processing" || !result) return;
     let processed = 0;
+    const total = Math.max(targets.total, 1);
     const id = setInterval(() => {
-      processed += Math.ceil(targets.total / 24);
-      if (processed >= targets.total) {
-        processed = targets.total;
-        setCounts({ processed, flagged: targets.flagged, accepted: targets.total - targets.flagged });
+      processed += Math.max(1, Math.ceil(total / 24));
+      if (processed >= total) {
+        processed = total;
+        setCounts({ processed, flagged: targets.flagged, accepted: total - targets.flagged });
         clearInterval(id);
         setTimeout(() => setStage("done"), 400);
       } else {
-        const flaggedSoFar = Math.round((processed / targets.total) * targets.flagged);
+        const flaggedSoFar = Math.round((processed / total) * targets.flagged);
         setCounts({ processed, flagged: flaggedSoFar, accepted: processed - flaggedSoFar });
       }
-    }, 60);
+    }, 30);
     return () => clearInterval(id);
-  }, [stage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, result]);
 
-  const start = () => { setCounts({ processed: 0, flagged: 0, accepted: 0 }); setStage("processing"); };
+  const startWithResult = (loaded) => {
+    setErrorMsg("");
+    setResult(loaded);
+    setCounts({ processed: 0, flagged: 0, accepted: 0 });
+    setStage("processing");
+  };
+
+  const useSample = () => startWithResult(loadSampleDataset());
+
+  const handleFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const loaded = loadFromUpload(String(e.target.result || ""), file.name);
+        if (loaded.readings.length === 0) {
+          setErrorMsg("No valid rows found in this file — check it matches chainage,date,parameter,value.");
+          setStage("idle");
+          return;
+        }
+        startWithResult(loaded);
+      } catch (err) {
+        setErrorMsg("Could not parse this file. Falling back to sample dataset is recommended.");
+        setStage("idle");
+      }
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <div className="max-w-2xl mx-auto mt-10">
       <div className="text-center mb-6">
         <div className="text-xs uppercase font-semibold tracking-widest mb-1" style={{ color: C.accent, fontFamily: FONT_MONO }}>Ingest Pipeline</div>
         <h1 className="text-xl font-semibold" style={{ color: C.textPrimary }}>Upload Track Recording / Inspection Data</h1>
-        <p className="text-sm mt-1" style={{ color: C.textSecondary }}>CSV or JSON with gauge, alignment, twist, unevenness, cross-level, and rail wear readings per chainage.</p>
+        <p className="text-sm mt-1" style={{ color: C.textSecondary }}>
+          Locked format: <code style={{ fontFamily: FONT_MONO, color: C.accent }}>chainage,date,parameter,value</code> — parameter one of gauge, alignment, twist, unevenness, crossLevel, railWear.
+        </p>
       </div>
 
       {(stage === "idle" || stage === "dragging") && (
         <div
           onDragOver={(e) => { e.preventDefault(); setStage("dragging"); }}
           onDragLeave={() => setStage("idle")}
-          onDrop={(e) => { e.preventDefault(); start(); }}
+          onDrop={(e) => { e.preventDefault(); setStage("idle"); handleFile(e.dataTransfer.files?.[0]); }}
           className="rounded-lg border-2 border-dashed flex flex-col items-center justify-center py-14 transition-colors"
           style={{ borderColor: stage === "dragging" ? C.accent : C.border, background: stage === "dragging" ? C.accentBg : C.panel }}
         >
           <UploadCloud size={36} color={stage === "dragging" ? C.accent : C.textSecondary} />
           <p className="mt-3 text-sm" style={{ color: C.textPrimary }}>Drag & drop a .csv or .json file here</p>
           <p className="text-xs mt-1" style={{ color: C.textDim }}>or</p>
-          <button
-            onClick={start}
-            className="mt-3 px-4 py-2 rounded text-sm font-semibold"
-            style={{ background: C.accent, color: "#0A1520" }}
-          >
-            Use Sample Dataset
-          </button>
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-4 py-2 rounded text-sm font-semibold"
+              style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
+            >
+              Choose File
+            </button>
+            <button
+              onClick={useSample}
+              className="px-4 py-2 rounded text-sm font-semibold"
+              style={{ background: C.accent, color: "#0A1520" }}
+            >
+              Use Sample Dataset
+            </button>
+          </div>
+          <input
+            ref={fileInputRef} type="file" accept=".csv,.json" className="hidden"
+            onChange={(e) => handleFile(e.target.files?.[0])}
+          />
+          {errorMsg && (
+            <p className="text-xs mt-3 px-3 text-center" style={{ color: C.critical }}>{errorMsg}</p>
+          )}
         </div>
       )}
 
@@ -728,8 +717,8 @@ function UploadView({ onDone }) {
           <div className="p-5 space-y-4">
             {[
               { label: "Rows processed", value: counts.processed, total: targets.total, color: C.accent },
-              { label: "Rows flagged (malformed)", value: counts.flagged, total: targets.flagged, color: C.warning },
-              { label: "Rows accepted", value: counts.accepted, total: targets.total - targets.flagged, color: C.ok },
+              { label: "Rows flagged (malformed)", value: counts.flagged, total: Math.max(targets.flagged, 1), color: C.warning },
+              { label: "Rows accepted", value: counts.accepted, total: Math.max(targets.total - targets.flagged, 1), color: C.ok },
             ].map((row) => (
               <div key={row.label}>
                 <div className="flex justify-between text-xs mb-1">
@@ -746,28 +735,36 @@ function UploadView({ onDone }) {
         </Panel>
       )}
 
-      {stage === "done" && (
+      {stage === "done" && result && (
         <Panel title="Validation Complete" icon={CheckCircle2}>
           <div className="p-5">
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div className="rounded p-3 text-center" style={{ background: C.panelAlt, border: `1px solid ${C.border}` }}>
-                <div className="text-xl font-semibold" style={{ color: C.textPrimary, fontFamily: FONT_MONO }}>{targets.total}</div>
+                <div className="text-xl font-semibold" style={{ color: C.textPrimary, fontFamily: FONT_MONO }}>{result.validation.total}</div>
                 <div className="text-[10px] uppercase" style={{ color: C.textDim }}>Processed</div>
               </div>
               <div className="rounded p-3 text-center" style={{ background: C.warningBg, border: `1px solid ${C.border}` }}>
-                <div className="text-xl font-semibold" style={{ color: C.warning, fontFamily: FONT_MONO }}>{targets.flagged}</div>
+                <div className="text-xl font-semibold" style={{ color: C.warning, fontFamily: FONT_MONO }}>{result.validation.invalidCount}</div>
                 <div className="text-[10px] uppercase" style={{ color: C.textDim }}>Malformed</div>
               </div>
               <div className="rounded p-3 text-center" style={{ background: C.okBg, border: `1px solid ${C.border}` }}>
-                <div className="text-xl font-semibold" style={{ color: C.ok, fontFamily: FONT_MONO }}>{targets.total - targets.flagged}</div>
+                <div className="text-xl font-semibold" style={{ color: C.ok, fontFamily: FONT_MONO }}>{result.validation.validCount}</div>
                 <div className="text-[10px] uppercase" style={{ color: C.textDim }}>Accepted</div>
               </div>
             </div>
+            <div className="flex items-center gap-2 mb-3">
+              <span
+                className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded"
+                style={{ background: C.accentBg, color: C.accent, fontFamily: FONT_MONO, letterSpacing: "0.04em" }}
+              >
+                {result.meta.label}
+              </span>
+            </div>
             <p className="text-xs mb-4" style={{ color: C.textSecondary }}>
-              60.0 km of chainage stored at 100m resolution across 6 parameters. Dataset ready for analysis.
+              {result.readings.length} chainage points stored across 6 parameters. {result.meta.note}
             </p>
             <button
-              onClick={onDone}
+              onClick={() => onDatasetReady(result)}
               className="w-full flex items-center justify-center gap-2 rounded py-2.5 text-sm font-semibold"
               style={{ background: C.accent, color: "#0A1520" }}
             >
@@ -1138,6 +1135,33 @@ function ReportView({ trendSections, alerts, thresholds, selectedId, setSelected
 /* ============================================================================
    ROOT APP
    ============================================================================ */
+function NoDatasetState({ onGoToIngest }) {
+  return (
+    <div className="max-w-md mx-auto mt-16 text-center">
+      <FileCheck2 size={28} color={C.textDim} className="mx-auto mb-3" />
+      <p className="text-sm" style={{ color: C.textSecondary }}>No dataset loaded yet.</p>
+      <p className="text-xs mt-1" style={{ color: C.textDim }}>Load the sample dataset or upload inspection data to view this screen.</p>
+      <button
+        onClick={onGoToIngest}
+        className="mt-4 px-4 py-2 rounded text-sm font-semibold"
+        style={{ background: C.accent, color: "#0A1520" }}
+      >
+        Go to Ingest
+      </button>
+    </div>
+  );
+}
+
+function EmptyTrendState() {
+  return (
+    <div className="max-w-md mx-auto mt-16 text-center">
+      <TrendingUp size={28} color={C.textDim} className="mx-auto mb-3" />
+      <p className="text-sm" style={{ color: C.textSecondary }}>No historical readings in this dataset.</p>
+      <p className="text-xs mt-1" style={{ color: C.textDim }}>Trend projection needs multiple dated passes per section. The sample dataset includes these — a single-pass upload won't.</p>
+    </div>
+  );
+}
+
 const NAV = [
   { id: "upload", label: "Ingest", icon: UploadCloud },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -1150,13 +1174,25 @@ export default function RailTrackDashboard() {
   const [view, setView] = useState("upload");
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
   const [showThresholds, setShowThresholds] = useState(false);
-  const [focusChainage, setFocusChainage] = useState(12.4);
-  const [selectedTrendId, setSelectedTrendId] = useState("c1");
+  const [focusChainage, setFocusChainage] = useState(0);
+  const [selectedTrendId, setSelectedTrendId] = useState(null);
   const [toast, setToast] = useState(null);
 
-  const readings = useMemo(() => generateDataset(), []);
-  const alerts = useMemo(() => computeAlerts(readings, thresholds), [readings, thresholds]);
-  const trendSections = useMemo(() => generateTrendHistories(readings), [readings]);
+  // dataset = { readings, trendSections, validation, meta } once loaded via
+  // UploadView (sample or real file). Stays null until then — this is the
+  // seam that gets swapped for loadFromApi() once the backend is connected.
+  const [dataset, setDataset] = useState(null);
+  const readings = dataset?.readings ?? [];
+  const trendSections = dataset?.trendSections ?? [];
+  const alerts = useMemo(() => (dataset ? computeAlerts(readings, thresholds) : []), [dataset, readings, thresholds]);
+
+  const handleDatasetReady = (loaded) => {
+    setDataset(loaded);
+    const firstSection = loaded.trendSections[0];
+    setFocusChainage(firstSection ? firstSection.center : (loaded.readings[0]?.chainage ?? 0));
+    setSelectedTrendId(firstSection ? firstSection.id : null);
+    setView("dashboard");
+  };
 
   useEffect(() => {
     if (!toast) return;
@@ -1230,6 +1266,15 @@ export default function RailTrackDashboard() {
                 KM {CHAINAGE_START}–{CHAINAGE_END} · Northern Division
               </span>
             )}
+            {dataset && (
+              <span
+                title={dataset.meta.note}
+                className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded"
+                style={{ color: C.accent, background: C.accentBg, fontFamily: FONT_MONO, letterSpacing: "0.04em" }}
+              >
+                {dataset.meta.source === "sample" ? "Sample / Demo Data" : "Uploaded Data"}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             {activeAlertCount > 0 && (
@@ -1245,24 +1290,35 @@ export default function RailTrackDashboard() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
-          {view === "upload" && <UploadView onDone={() => setView("dashboard")} />}
-          {view === "dashboard" && (
+          {view === "upload" && <UploadView onDatasetReady={handleDatasetReady} />}
+          {view !== "upload" && !dataset && (
+            <NoDatasetState onGoToIngest={() => setView("upload")} />
+          )}
+          {view === "dashboard" && dataset && (
             <DashboardView
               readings={readings} thresholds={thresholds}
               focusChainage={focusChainage} setFocusChainage={setFocusChainage}
-              alerts={alerts} clusters={CLUSTERS}
+              alerts={alerts} clusters={trendSections}
             />
           )}
-          {view === "search" && <SearchView alerts={alerts} onJump={jumpToDashboard} />}
-          {view === "trend" && (
-            <TrendView trendSections={trendSections} thresholds={thresholds} selectedId={selectedTrendId} setSelectedId={setSelectedTrendId} />
+          {view === "search" && dataset && <SearchView alerts={alerts} onJump={jumpToDashboard} />}
+          {view === "trend" && dataset && (
+            trendSections.length > 0 ? (
+              <TrendView trendSections={trendSections} thresholds={thresholds} selectedId={selectedTrendId} setSelectedId={setSelectedTrendId} />
+            ) : (
+              <EmptyTrendState />
+            )
           )}
-          {view === "report" && (
-            <ReportView
-              trendSections={trendSections} alerts={alerts} thresholds={thresholds}
-              selectedId={selectedTrendId} setSelectedId={setSelectedTrendId}
-              onExport={() => setToast("Report generated — ready to download.")}
-            />
+          {view === "report" && dataset && (
+            trendSections.length > 0 ? (
+              <ReportView
+                trendSections={trendSections} alerts={alerts} thresholds={thresholds}
+                selectedId={selectedTrendId} setSelectedId={setSelectedTrendId}
+                onExport={() => setToast("Report generated — ready to download.")}
+              />
+            ) : (
+              <EmptyTrendState />
+            )
           )}
         </div>
       </div>
