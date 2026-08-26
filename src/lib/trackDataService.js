@@ -32,6 +32,24 @@ export const LOCKED_COLUMNS = ["chainage", "date", "parameter", "value"];
 
 export const PARAM_KEYS = ["gauge", "alignment", "twist", "unevenness", "crossLevel", "railWear"];
 
+/* ---------------------------------------------------------------------------
+ * Locked date format is ISO 8601 (YYYY-MM-DD), matching docs/data_format.md
+ * and every date already in cleaned_data.csv. This is checked explicitly
+ * during parsing (not just "is it non-empty") because:
+ *   - pickCurrentDate() below relies on `new Date(dateStr)` to find the most
+ *     recent pass, and non-ISO formats (e.g. DD-MM-YYYY) parse as Invalid
+ *     Date / NaN in JS, silently producing zero readings for the WHOLE file
+ *     rather than a normal per-row "malformed" count.
+ *   - Catching it here means a bad date format shows up as an expected
+ *     validation-panel count instead of a hard "could not parse this file"
+ *     rejection with no explanation.
+ * ------------------------------------------------------------------------- */
+function isValidLockedDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const t = new Date(dateStr).getTime();
+  return !Number.isNaN(t);
+}
+
 export const DEFAULT_THRESHOLDS = {
   gauge: { warning: 5, critical: 9 },
   alignment: { warning: 5, critical: 10 },
@@ -161,6 +179,10 @@ export function parseLockedCsv(text) {
       invalid.push({ row: rowNum, raw: line, reason: "missing date" });
       return;
     }
+    if (!isValidLockedDate(dateRaw)) {
+      invalid.push({ row: rowNum, raw: line, reason: `invalid date "${dateRaw}" — expected YYYY-MM-DD` });
+      return;
+    }
     if (!PARAM_KEYS.includes(paramRaw)) {
       invalid.push({ row: rowNum, raw: line, reason: `unknown parameter "${paramRaw}"` });
       return;
@@ -202,6 +224,10 @@ export function parseLockedJson(text) {
       invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: "missing date" });
       return;
     }
+    if (!isValidLockedDate(row.date)) {
+      invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: `invalid date "${row.date}" — expected YYYY-MM-DD` });
+      return;
+    }
     if (!PARAM_KEYS.includes(row?.parameter)) {
       invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: `unknown parameter "${row?.parameter}"` });
       return;
@@ -223,10 +249,17 @@ export function parseLockedJson(text) {
  * any rows on other dates are treated as historical (used for trend only).
  * ------------------------------------------------------------------------- */
 function pickCurrentDate(validRows) {
-  const freq = new Map();
-  validRows.forEach((r) => freq.set(r.date, (freq.get(r.date) || 0) + 1));
-  let best = null, bestCount = -1;
-  freq.forEach((count, date) => { if (count > bestCount) { best = date; bestCount = count; } });
+  // "Current snapshot" must mean the most RECENT inspection pass, not
+  // whichever date happens to have the most rows. Picking by row-count was
+  // silently choosing arbitrary (often the earliest, healthiest) dates on
+  // scale-test files where a monthly pass is split across several days —
+  // producing a "0 alerts" dashboard even on data with real breaches later
+  // in the timeline. See docs/data_format.md for the locked snapshot rule.
+  let best = null, bestTime = -Infinity;
+  validRows.forEach((r) => {
+    const t = new Date(r.date).getTime();
+    if (!Number.isNaN(t) && t > bestTime) { bestTime = t; best = r.date; }
+  });
   return best;
 }
 
@@ -347,3 +380,4 @@ export async function loadFromApi() {
     "Use loadSampleDataset() or file upload until this is wired up."
   );
 }
+
