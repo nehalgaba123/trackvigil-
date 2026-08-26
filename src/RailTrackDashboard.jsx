@@ -12,6 +12,11 @@ import {
   PARAM_KEYS, DEFAULT_THRESHOLDS, CHAINAGE_START, CHAINAGE_END, STEP,
   loadSampleDataset, loadFromUpload,
 } from "./lib/trackDataService";
+import { AuthProvider, useAuth } from "./lib/AuthContext";
+import { ROLES, PERMISSIONS, hasPermission } from "./lib/roles";
+import RoleGate from "./components/RoleGate";
+import AuditLogPanel from "./components/AuditLogPanel";
+import { logAuditEvent } from "./lib/auditLog";
 
 /* ============================================================================
    DESIGN TOKENS
@@ -412,15 +417,19 @@ function ParamChart({ param, readings, thresholds, focusChainage, onChartClick }
    ALERTS PANEL
    ============================================================================ */
 function AlertsPanel({ alerts, onSelect, focusChainage }) {
+  const { user } = useAuth();
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [closedIds, setClosedIds] = useState(new Set());
   const [sortBy, setSortBy] = useState("severity");
 
   const filtered = useMemo(() => {
-    let list = alerts.filter((a) => severityFilter === "all" || a.sev === severityFilter);
+    let list = alerts
+      .filter((a) => !closedIds.has(a.id))
+      .filter((a) => severityFilter === "all" || a.sev === severityFilter);
     if (sortBy === "chainage") list = [...list].sort((a, b) => a.start - b.start);
     else list = [...list].sort((a, b) => (a.sev === b.sev ? a.start - b.start : a.sev === "critical" ? -1 : 1));
     return list;
-  }, [alerts, severityFilter, sortBy]);
+  }, [alerts, severityFilter, sortBy, closedIds]);
 
   return (
     <Panel
@@ -460,8 +469,8 @@ function AlertsPanel({ alerts, onSelect, focusChainage }) {
           const mid = (a.start + a.end) / 2;
           const active = Math.abs(mid - focusChainage) < STEP;
           return (
+            <React.Fragment key={a.id}>
             <button
-              key={a.id}
               onClick={() => onSelect(mid)}
               className="w-full text-left rounded px-2.5 py-2 transition-colors"
               style={{
@@ -485,6 +494,26 @@ function AlertsPanel({ alerts, onSelect, focusChainage }) {
                 </span>
               </div>
             </button>
+            <RoleGate permission={PERMISSIONS.CLOSE_ALERT}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const reason = window.prompt("Reason for closing this alert:");
+                  if (!reason) return;
+                  logAuditEvent({
+                    actor: user.name, role: user.role, action: "close_alert",
+                    target: `${a.param}@${fmt(a.start, 1)}-${fmt(a.end, 1)}`,
+                    before: a.sev, after: "closed", reason,
+                  });
+                  setClosedIds((prev) => new Set(prev).add(a.id));
+                }}
+                className="w-full text-[10px] uppercase font-semibold py-1 rounded mt-1"
+                style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
+              >
+                Close Alert
+              </button>
+            </RoleGate>
+            </React.Fragment>
           );
         })}
       </div>
@@ -537,6 +566,7 @@ function SectionDrillDown({ reading, thresholds }) {
    THRESHOLDS DRAWER (configurable thresholds — live)
    ============================================================================ */
 function ThresholdsDrawer({ open, onClose, thresholds, setThresholds }) {
+  const { user } = useAuth();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-40 flex justify-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
@@ -571,7 +601,16 @@ function ThresholdsDrawer({ open, onClose, thresholds, setThresholds }) {
                     <span className="text-[10px] uppercase font-semibold" style={{ color: C.warning }}>Warning</span>
                     <input
                       type="number" step="0.5" value={t.warning}
-                      onChange={(e) => setThresholds((prev) => ({ ...prev, [p]: { ...prev[p], warning: +e.target.value } }))}
+                      onChange={(e) => {
+                        const before = t.warning;
+                        const after = +e.target.value;
+                        setThresholds((prev) => ({ ...prev, [p]: { ...prev[p], warning: after } }));
+                        logAuditEvent({
+                          actor: user.name, role: user.role, action: "edit_threshold",
+                          target: `${p}.warning`, before, after,
+                          reason: window.prompt("Reason for this threshold change (cite IRPWM ref if applicable):"),
+                        });
+                      }}
                       className="rounded px-2 py-1 text-sm outline-none"
                       style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.textPrimary, fontFamily: FONT_MONO }}
                     />
@@ -580,7 +619,16 @@ function ThresholdsDrawer({ open, onClose, thresholds, setThresholds }) {
                     <span className="text-[10px] uppercase font-semibold" style={{ color: C.critical }}>Critical</span>
                     <input
                       type="number" step="0.5" value={t.critical}
-                      onChange={(e) => setThresholds((prev) => ({ ...prev, [p]: { ...prev[p], critical: +e.target.value } }))}
+                      onChange={(e) => {
+                        const before = t.critical;
+                        const after = +e.target.value;
+                        setThresholds((prev) => ({ ...prev, [p]: { ...prev[p], critical: after } }));
+                        logAuditEvent({
+                          actor: user.name, role: user.role, action: "edit_threshold",
+                          target: `${p}.critical`, before, after,
+                          reason: window.prompt("Reason for this threshold change (cite IRPWM ref if applicable):"),
+                        });
+                      }}
                       className="rounded px-2 py-1 text-sm outline-none"
                       style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.textPrimary, fontFamily: FONT_MONO }}
                     />
@@ -606,6 +654,8 @@ function ThresholdsDrawer({ open, onClose, thresholds, setThresholds }) {
    UPLOAD / INGEST VIEW
    ============================================================================ */
 function UploadView({ onDatasetReady }) {
+  const { user } = useAuth();
+  const canUploadProduction = hasPermission(user.role, PERMISSIONS.UPLOAD_DATA);
   const [stage, setStage] = useState("idle"); // idle | dragging | processing | done | error
   const [counts, setCounts] = useState({ processed: 0, flagged: 0, accepted: 0 });
   const [result, setResult] = useState(null); // full { readings, trendSections, validation, meta }
@@ -677,35 +727,57 @@ function UploadView({ onDatasetReady }) {
 
       {(stage === "idle" || stage === "dragging") && (
         <div
-          onDragOver={(e) => { e.preventDefault(); setStage("dragging"); }}
+          onDragOver={(e) => { if (canUploadProduction) { e.preventDefault(); setStage("dragging"); } }}
           onDragLeave={() => setStage("idle")}
-          onDrop={(e) => { e.preventDefault(); setStage("idle"); handleFile(e.dataTransfer.files?.[0]); }}
+          onDrop={(e) => { e.preventDefault(); if (!canUploadProduction) return; setStage("idle"); handleFile(e.dataTransfer.files?.[0]); }}
           className="rounded-lg border-2 border-dashed flex flex-col items-center justify-center py-14 transition-colors"
           style={{ borderColor: stage === "dragging" ? C.accent : C.border, background: stage === "dragging" ? C.accentBg : C.panel }}
         >
           <UploadCloud size={36} color={stage === "dragging" ? C.accent : C.textSecondary} />
-          <p className="mt-3 text-sm" style={{ color: C.textPrimary }}>Drag & drop a .csv or .json file here</p>
-          <p className="text-xs mt-1" style={{ color: C.textDim }}>or</p>
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2 rounded text-sm font-semibold"
-              style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
-            >
-              Choose File
-            </button>
-            <button
-              onClick={useSample}
-              className="px-4 py-2 rounded text-sm font-semibold"
-              style={{ background: C.accent, color: "#0A1520" }}
-            >
-              Use Sample Dataset
-            </button>
-          </div>
-          <input
-            ref={fileInputRef} type="file" accept=".csv,.json" className="hidden"
-            onChange={(e) => handleFile(e.target.files?.[0])}
-          />
+          {canUploadProduction ? (
+            <>
+              <p className="mt-3 text-sm" style={{ color: C.textPrimary }}>Drag & drop a .csv or .json file here</p>
+              <p className="text-xs mt-1" style={{ color: C.textDim }}>or</p>
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2 rounded text-sm font-semibold"
+                  style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
+                >
+                  Choose File
+                </button>
+                <button
+                  onClick={useSample}
+                  className="px-4 py-2 rounded text-sm font-semibold"
+                  style={{ background: C.accent, color: "#0A1520" }}
+                >
+                  Use Sample Dataset
+                </button>
+              </div>
+              <input
+                ref={fileInputRef} type="file" accept=".csv,.json" className="hidden"
+                onChange={(e) => handleFile(e.target.files?.[0])}
+              />
+            </>
+          ) : (
+            <>
+              <p className="mt-3 text-sm text-center max-w-xs" style={{ color: C.textPrimary }}>
+                Only the Data &amp; Analytics Owner role can upload and certify production track data.
+              </p>
+              <p className="text-xs mt-1 text-center max-w-xs" style={{ color: C.textDim }}>
+                Your role ({user.role.replace(/_/g, " ")}) can preview the app with the sample dataset instead.
+              </p>
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={useSample}
+                  className="px-4 py-2 rounded text-sm font-semibold"
+                  style={{ background: C.accent, color: "#0A1520" }}
+                >
+                  Use Sample Dataset
+                </button>
+              </div>
+            </>
+          )}
           {errorMsg && (
             <p className="text-xs mt-3 px-3 text-center" style={{ color: C.critical }}>{errorMsg}</p>
           )}
@@ -764,7 +836,27 @@ function UploadView({ onDatasetReady }) {
               {result.readings.length} chainage points stored across 6 parameters. {result.meta.note}
             </p>
             <button
-              onClick={() => onDatasetReady(result)}
+              onClick={() => {
+                // Only real uploads are certification-worthy events; loading the
+                // built-in sample/demo dataset doesn't touch production data and
+                // isn't logged.
+                if (result.meta.source !== "sample" && canUploadProduction) {
+                  logAuditEvent({
+                    actor: user.name,
+                    role: user.role,
+                    action: "CERTIFY_DATA",
+                    target: result.meta.label || "uploaded dataset",
+                    before: null,
+                    after: {
+                      rows: result.validation.total,
+                      accepted: result.validation.validCount,
+                      flagged: result.validation.invalidCount,
+                    },
+                    reason: `Certified as production dataset (${result.validation.validCount}/${result.validation.total} rows accepted).`,
+                  });
+                }
+                onDatasetReady(result);
+              }}
               className="w-full flex items-center justify-center gap-2 rounded py-2.5 text-sm font-semibold"
               style={{ background: C.accent, color: "#0A1520" }}
             >
@@ -1170,7 +1262,8 @@ const NAV = [
   { id: "report", label: "Report", icon: FileText },
 ];
 
-export default function RailTrackDashboard() {
+function DashboardInner() {
+  const { user, switchRole } = useAuth();
   const [view, setView] = useState("upload");
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
   const [showThresholds, setShowThresholds] = useState(false);
@@ -1245,14 +1338,37 @@ export default function RailTrackDashboard() {
           ))}
         </nav>
         <div className="p-2 border-t" style={{ borderColor: C.border }}>
-          <button
-            onClick={() => setShowThresholds(true)}
-            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded text-sm font-medium justify-center md:justify-start"
-            style={{ color: C.textSecondary }}
+          {/* TEMPORARY role switcher — replace with real login once backend auth exists */}
+          <select
+            value={user.role}
+            onChange={(e) => switchRole(e.target.value)}
+            className="w-full mb-2 text-xs rounded px-2 py-1"
+            style={{ background: C.bgRaised, border: `1px solid ${C.border}`, color: C.textPrimary }}
           >
-            <SlidersHorizontal size={16} />
-            <span className="hidden md:inline">Thresholds</span>
-          </button>
+            {Object.values(ROLES).map((r) => (
+              <option key={r} value={r}>{r.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          <RoleGate permission={PERMISSIONS.EDIT_THRESHOLDS}>
+            <button
+              onClick={() => setShowThresholds(true)}
+              className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded text-sm font-medium justify-center md:justify-start"
+              style={{ color: C.textSecondary }}
+            >
+              <SlidersHorizontal size={16} />
+              <span className="hidden md:inline">Thresholds</span>
+            </button>
+          </RoleGate>
+          <RoleGate permission={PERMISSIONS.VIEW_AUDIT_LOG}>
+            <button
+              onClick={() => setView("audit")}
+              className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded text-sm font-medium justify-center md:justify-start"
+              style={{ color: C.textSecondary }}
+            >
+              <FileCheck2 size={16} />
+              <span className="hidden md:inline">Audit Log</span>
+            </button>
+          </RoleGate>
         </div>
       </div>
 
@@ -1320,11 +1436,20 @@ export default function RailTrackDashboard() {
               <EmptyTrendState />
             )
           )}
+          {view === "audit" && <AuditLogPanel />}
         </div>
       </div>
 
       <ThresholdsDrawer open={showThresholds} onClose={() => setShowThresholds(false)} thresholds={thresholds} setThresholds={setThresholds} />
       <Toast toast={toast} />
     </div>
+  );
+}
+
+export default function RailTrackDashboard() {
+  return (
+    <AuthProvider>
+      <DashboardInner />
+    </AuthProvider>
   );
 }
