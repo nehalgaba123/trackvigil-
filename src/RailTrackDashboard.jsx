@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   PARAM_KEYS, DEFAULT_THRESHOLDS, CHAINAGE_START, CHAINAGE_END, STEP,
-  loadSampleDataset, loadFromUpload,
+  loadSampleDataset, loadFromUpload, loadFromApi,
 } from "./lib/trackDataService";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { ROLES, PERMISSIONS, hasPermission } from "./lib/roles";
@@ -695,6 +695,23 @@ function UploadView({ onDatasetReady }) {
 
   const useSample = () => startWithResult(loadSampleDataset());
 
+  const [apiLoading, setApiLoading] = useState(false);
+  const [apiError, setApiError] = useState("");
+
+  const useBackend = async () => {
+    setErrorMsg("");
+    setApiError("");
+    setApiLoading(true);
+    try {
+      const loaded = await loadFromApi();
+      setApiLoading(false);
+      startWithResult(loaded);
+    } catch (err) {
+      setApiLoading(false);
+      setApiError(err.message || "Could not reach the backend API.");
+    }
+  };
+
   const handleFile = (file) => {
     if (!file) return;
     const reader = new FileReader();
@@ -753,6 +770,14 @@ function UploadView({ onDatasetReady }) {
                 >
                   Use Sample Dataset
                 </button>
+                <button
+                  onClick={useBackend}
+                  disabled={apiLoading}
+                  className="px-4 py-2 rounded text-sm font-semibold"
+                  style={{ border: `1px solid ${C.accent}`, color: C.accent, opacity: apiLoading ? 0.6 : 1 }}
+                >
+                  {apiLoading ? "Connecting…" : "Connect to Backend"}
+                </button>
               </div>
               <input
                 ref={fileInputRef} type="file" accept=".csv,.json" className="hidden"
@@ -775,11 +800,22 @@ function UploadView({ onDatasetReady }) {
                 >
                   Use Sample Dataset
                 </button>
+                <button
+                  onClick={useBackend}
+                  disabled={apiLoading}
+                  className="px-4 py-2 rounded text-sm font-semibold"
+                  style={{ border: `1px solid ${C.accent}`, color: C.accent, opacity: apiLoading ? 0.6 : 1 }}
+                >
+                  {apiLoading ? "Connecting…" : "Connect to Backend"}
+                </button>
               </div>
             </>
           )}
           {errorMsg && (
             <p className="text-xs mt-3 px-3 text-center" style={{ color: C.critical }}>{errorMsg}</p>
+          )}
+          {apiError && (
+            <p className="text-xs mt-3 px-3 text-center" style={{ color: C.critical }}>{apiError}</p>
           )}
         </div>
       )}
@@ -1277,7 +1313,7 @@ function DashboardInner() {
   const [dataset, setDataset] = useState(null);
   const readings = dataset?.readings ?? [];
   const trendSections = dataset?.trendSections ?? [];
-  const alerts = useMemo(() => (dataset ? computeAlerts(readings, thresholds) : []), [dataset, readings, thresholds]);
+  const alerts = useMemo(() => (dataset ? (dataset.alerts ?? computeAlerts(readings, thresholds)) : []), [dataset, readings, thresholds]);
 
   const handleDatasetReady = (loaded) => {
     setDataset(loaded);

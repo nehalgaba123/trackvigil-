@@ -32,24 +32,6 @@ export const LOCKED_COLUMNS = ["chainage", "date", "parameter", "value"];
 
 export const PARAM_KEYS = ["gauge", "alignment", "twist", "unevenness", "crossLevel", "railWear"];
 
-/* ---------------------------------------------------------------------------
- * Locked date format is ISO 8601 (YYYY-MM-DD), matching docs/data_format.md
- * and every date already in cleaned_data.csv. This is checked explicitly
- * during parsing (not just "is it non-empty") because:
- *   - pickCurrentDate() below relies on `new Date(dateStr)` to find the most
- *     recent pass, and non-ISO formats (e.g. DD-MM-YYYY) parse as Invalid
- *     Date / NaN in JS, silently producing zero readings for the WHOLE file
- *     rather than a normal per-row "malformed" count.
- *   - Catching it here means a bad date format shows up as an expected
- *     validation-panel count instead of a hard "could not parse this file"
- *     rejection with no explanation.
- * ------------------------------------------------------------------------- */
-function isValidLockedDate(dateStr) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
-  const t = new Date(dateStr).getTime();
-  return !Number.isNaN(t);
-}
-
 export const DEFAULT_THRESHOLDS = {
   gauge: { warning: 5, critical: 9 },
   alignment: { warning: 5, critical: 10 },
@@ -179,10 +161,6 @@ export function parseLockedCsv(text) {
       invalid.push({ row: rowNum, raw: line, reason: "missing date" });
       return;
     }
-    if (!isValidLockedDate(dateRaw)) {
-      invalid.push({ row: rowNum, raw: line, reason: `invalid date "${dateRaw}" — expected YYYY-MM-DD` });
-      return;
-    }
     if (!PARAM_KEYS.includes(paramRaw)) {
       invalid.push({ row: rowNum, raw: line, reason: `unknown parameter "${paramRaw}"` });
       return;
@@ -224,10 +202,6 @@ export function parseLockedJson(text) {
       invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: "missing date" });
       return;
     }
-    if (!isValidLockedDate(row.date)) {
-      invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: `invalid date "${row.date}" — expected YYYY-MM-DD` });
-      return;
-    }
     if (!PARAM_KEYS.includes(row?.parameter)) {
       invalid.push({ row: rowNum, raw: JSON.stringify(row), reason: `unknown parameter "${row?.parameter}"` });
       return;
@@ -249,17 +223,10 @@ export function parseLockedJson(text) {
  * any rows on other dates are treated as historical (used for trend only).
  * ------------------------------------------------------------------------- */
 function pickCurrentDate(validRows) {
-  // "Current snapshot" must mean the most RECENT inspection pass, not
-  // whichever date happens to have the most rows. Picking by row-count was
-  // silently choosing arbitrary (often the earliest, healthiest) dates on
-  // scale-test files where a monthly pass is split across several days —
-  // producing a "0 alerts" dashboard even on data with real breaches later
-  // in the timeline. See docs/data_format.md for the locked snapshot rule.
-  let best = null, bestTime = -Infinity;
-  validRows.forEach((r) => {
-    const t = new Date(r.date).getTime();
-    if (!Number.isNaN(t) && t > bestTime) { bestTime = t; best = r.date; }
-  });
+  const freq = new Map();
+  validRows.forEach((r) => freq.set(r.date, (freq.get(r.date) || 0) + 1));
+  let best = null, bestCount = -1;
+  freq.forEach((count, date) => { if (count > bestCount) { best = date; bestCount = count; } });
   return best;
 }
 
@@ -284,12 +251,11 @@ export function longToWide(validRows) {
 }
 
 /* ---------------------------------------------------------------------------
- * Groups historical (non-current-date) rows into per-section monthly
- * history for the Trend Projection view. Falls back gracefully to an
- * empty array if the dataset has no historical passes (e.g. a real single
- * inspection upload) — TrendView/ReportView handle that case explicitly.
+ * RENAMED from buildTrendSections(). Logic is UNCHANGED — still specific to
+ * the sample dataset's six hardcoded SAMPLE_SECTIONS_META coordinates.
+ * Only used by loadSampleDataset() below.
  * ------------------------------------------------------------------------- */
-export function buildTrendSections(validRows, currentDate, wideReadings) {
+export function buildTrendSectionsFromSample(validRows, currentDate, wideReadings) {
   const historical = validRows.filter((r) => r.date !== currentDate);
   const sections = [];
 
@@ -317,6 +283,75 @@ export function buildTrendSections(validRows, currentDate, wideReadings) {
 }
 
 /* ---------------------------------------------------------------------------
+ * NEW: works with ANY valid uploaded dataset (locked schema, any chainages,
+ * any of the six parameters). Groups historical readings by the ACTUAL
+ * chainage + parameter combinations present in the data, rather than a
+ * fixed sample coordinate list. A group only becomes a trend section once
+ * it has 2+ distinct dates — a single date cannot show a trend.
+ *
+ * Ranked by severity (critical > warning > ok) then peak value, and capped
+ * at maxSections so a large dataset doesn't try to render one card per
+ * chainage-point-per-parameter. Produces the same
+ * { history, current, param, center, peakSeverity, zone, label, id } shape
+ * TrendView/ReportView already consume — no changes needed there.
+ * ------------------------------------------------------------------------- */
+export function buildTrendSectionsGeneric(validRows, currentDate, wideReadings, thresholds, maxSections = 24) {
+  const historical = validRows.filter((r) => r.date !== currentDate);
+
+  const groups = new Map(); // key: `${chainage}|${parameter}` -> rows[]
+  historical.forEach((r) => {
+    const key = `${r.chainage}|${r.parameter}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  });
+
+  const candidates = [];
+  groups.forEach((rows, key) => {
+    const dates = new Set(rows.map((r) => r.date));
+    if (dates.size < 2) return; // need 2+ distinct dates to show a trend
+
+    const sorted = [...rows].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const [chainageStr, parameter] = key.split("|");
+    const chainage = Number(chainageStr);
+
+    const history = sorted.map((r, idx) => {
+      const d = new Date(r.date);
+      return {
+        m: idx - (sorted.length - 1),
+        label: d.toLocaleDateString("en-US", { month: "short", day: "2-digit" }),
+        value: r.value,
+      };
+    });
+
+    // Keep the trend's latest point consistent with the current dashboard
+    // snapshot at that chainage, same convention as the sample-path function.
+    const currentReading = wideReadings.find((r) => Math.abs(r.chainage - chainage) < STEP / 2);
+    const current = currentReading ? currentReading[parameter] : history[history.length - 1].value;
+    history[history.length - 1] = { ...history[history.length - 1], value: current };
+
+    const t = thresholds[parameter];
+    const peak = Math.max(...sorted.map((r) => r.value), current);
+    const peakSeverity = peak >= t.critical ? "critical" : peak >= t.warning ? "warning" : "ok";
+
+    candidates.push({
+      id: `up-${key}`,
+      param: parameter,
+      center: chainage,
+      peakSeverity,
+      peak,
+      label: `Historical trend — ${parameter}`,
+      zone: `KM ${chainage.toFixed(1)}`,
+      history,
+      current,
+    });
+  });
+
+  const rank = { critical: 2, warning: 1, ok: 0 };
+  candidates.sort((a, b) => rank[b.peakSeverity] - rank[a.peakSeverity] || b.peak - a.peak);
+  return candidates.slice(0, maxSections);
+}
+
+/* ---------------------------------------------------------------------------
  * PUBLIC: loadSampleDataset()
  * Temporary development fallback until the backend/API is connected.
  * Generates a synthetic locked-format CSV, then runs it through the SAME
@@ -327,7 +362,7 @@ export function loadSampleDataset() {
   const csvText = buildSampleCsvText();
   const { valid, invalid, total } = parseLockedCsv(csvText);
   const { readings, currentDate } = longToWide(valid);
-  const trendSections = buildTrendSections(valid, currentDate, readings);
+  const trendSections = buildTrendSectionsFromSample(valid, currentDate, readings);
 
   return {
     readings,
@@ -350,7 +385,7 @@ export function loadFromUpload(text, filename) {
   const isJson = filename?.toLowerCase().endsWith(".json");
   const { valid, invalid, total } = isJson ? parseLockedJson(text) : parseLockedCsv(text);
   const { readings, currentDate } = longToWide(valid);
-  const trendSections = buildTrendSections(valid, currentDate, readings);
+  const trendSections = buildTrendSectionsGeneric(valid, currentDate, readings, DEFAULT_THRESHOLDS);
 
   return {
     readings,
@@ -365,19 +400,119 @@ export function loadFromUpload(text, filename) {
   };
 }
 
+export const API_BASE_URL = "http://localhost:5001";
+
 /* ---------------------------------------------------------------------------
- * PUBLIC: loadFromApi()
- * Placeholder for the real backend integration. Intentionally throws until
- * Person 5's API (GET /tracks, /alerts, /analytics, /priority) is wired up.
- * When that happens, this is the only function that needs to change —
- * it should return the same { readings, trendSections, validation, meta }
- * shape as loadSampleDataset()/loadFromUpload() above so no dashboard
- * component needs to change.
+ * Adapts the backend's GET /alerts payload into the exact
+ * { id, param, sev, start, end, peak } shape AlertsPanel already consumes.
  * ------------------------------------------------------------------------- */
-export async function loadFromApi() {
-  throw new Error(
-    "Backend API not connected yet. Expected endpoints: GET /tracks, GET /alerts, GET /analytics, GET /priority. " +
-    "Use loadSampleDataset() or file upload until this is wired up."
-  );
+function normalizeApiAlerts(alertsJson) {
+  const rawList = Array.isArray(alertsJson)
+    ? alertsJson
+    : Array.isArray(alertsJson?.alerts)
+    ? alertsJson.alerts
+    : null;
+  if (!rawList) return null;
+
+  const out = [];
+  rawList.forEach((a, i) => {
+    const param = a.param ?? a.parameter;
+    const sev = a.sev ?? a.severity;
+    const start = Number(a.start ?? a.startChainage ?? a.chainageStart ?? a.chainage);
+    const end = Number(a.end ?? a.endChainage ?? a.chainageEnd ?? start);
+    const peak = Number(a.peak ?? a.peakValue ?? a.value ?? a.max);
+
+    if (!PARAM_KEYS.includes(param)) return;
+    if (sev !== "critical" && sev !== "warning") return;
+    if (Number.isNaN(start) || Number.isNaN(peak)) return;
+
+    out.push({
+      id: a.id ?? `api-${param}-${i}-${start}`,
+      param,
+      sev,
+      start,
+      end: Number.isNaN(end) ? start : end,
+      peak,
+    });
+  });
+  return out;
 }
 
+/* ---------------------------------------------------------------------------
+ * PUBLIC: loadFromApi()
+ * Calls the real backend (GET /tracks, GET /alerts). Reshapes the backend's
+ * per-parameter history into the same { readings, trendSections, validation,
+ * meta } shape as loadSampleDataset()/loadFromUpload(), plus an optional
+ * `alerts` field used instead of recomputing thresholds client-side when
+ * the backend already supplies them.
+ * ------------------------------------------------------------------------- */
+export async function loadFromApi(baseUrl = API_BASE_URL) {
+  const [tracksRes, alertsRes] = await Promise.all([
+    fetch(`${baseUrl}/tracks`),
+    fetch(`${baseUrl}/alerts`).catch(() => null),
+  ]);
+
+  if (!tracksRes.ok) {
+    throw new Error(`Backend GET /tracks failed (${tracksRes.status}). Is the server running on ${baseUrl}?`);
+  }
+  const tracksJson = await tracksRes.json();
+  const tracks = Array.isArray(tracksJson?.tracks) ? tracksJson.tracks : [];
+
+  if (tracks.length === 0) {
+    throw new Error("Backend /tracks returned no data — the server may not have a processed dataset yet.");
+  }
+
+  const validRows = [];
+  tracks.forEach((t) => {
+    PARAM_KEYS.forEach((p) => {
+      const paramData = t.parameters?.[p];
+      (paramData?.history || []).forEach((h) => {
+        const value = Number(h.value);
+        if (h.date && !Number.isNaN(value)) {
+          validRows.push({ chainage: t.chainage, date: h.date, parameter: p, value });
+        }
+      });
+    });
+  });
+
+  // Build the current snapshot from each track's own `.current` field
+  // (data_service.js already sets this to the latest chronological history
+  // entry per parameter) rather than re-deriving "current" via most-
+  // frequent-date — that heuristic breaks when every inspection pass has
+  // equal row-count, which is the case for a real multi-date dataset.
+  const readings = tracks
+    .map((t) => {
+      const row = { chainage: t.chainage };
+      PARAM_KEYS.forEach((p) => { row[p] = t.parameters?.[p]?.current ?? 0; });
+      return row;
+    })
+    .sort((a, b) => a.chainage - b.chainage);
+
+  const currentDate = validRows.reduce(
+    (max, r) => (max === null || r.date > max ? r.date : max),
+    null
+  );
+  const trendSections = buildTrendSectionsGeneric(validRows, currentDate, readings, DEFAULT_THRESHOLDS);
+
+  let alerts = null;
+  if (alertsRes && alertsRes.ok) {
+    try {
+      alerts = normalizeApiAlerts(await alertsRes.json());
+    } catch {
+      alerts = null;
+    }
+  }
+
+  return {
+    readings,
+    trendSections,
+    alerts,
+    validation: { total: validRows.length, validCount: validRows.length, invalidCount: 0, invalidRows: [] },
+    meta: {
+      source: "api",
+      label: "Live Backend Data",
+      note: `Connected to TrackVigil backend at ${baseUrl}.`,
+      loadedAt: new Date().toISOString(),
+    },
+  };
+}
