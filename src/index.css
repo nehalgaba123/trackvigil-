@@ -6,3 +6,38 @@ html, body, #root {
   height: 100%;
   margin: 0;
 }
+
+/* Scoped print output for ReportView — printing/saving-as-PDF should show
+   only the report card itself, not the sidebar, nav, upload panel, or
+   section-picker buttons. Anything meant to be hidden while printing gets
+   className="no-print"; #printable-report is the one thing that stays. */
+@media print {
+  html, body, #root, .app-scroll-area {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #printable-report,
+  #printable-report * {
+    visibility: visible;
+  }
+  #printable-report {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+  #printable-report * {
+    background: transparent !important;
+    color: #111111 !important;
+    border-color: #cccccc !important;
+    box-shadow: none !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

@@ -4,7 +4,7 @@ import {
 } from "recharts";
 import {
   UploadCloud, LayoutDashboard, Search, TrendingUp, FileText, Settings, Train,
-  AlertTriangle, CheckCircle2, XCircle, ChevronRight, SlidersHorizontal, Download,
+  AlertTriangle, CheckCircle2, XCircle, ChevronRight, SlidersHorizontal,
   MapPin, Clock, Filter, ArrowUpDown, X, RotateCcw, FileCheck2, Ruler, Waves,
   RefreshCw, Activity, ArrowLeftRight, TrendingDown, Radio, ChevronDown, Printer,
 } from "lucide-react";
@@ -1171,7 +1171,7 @@ function TrendView({ trendSections, thresholds, selectedId, setSelectedId }) {
 /* ============================================================================
    REPORT VIEW
    ============================================================================ */
-function ReportView({ trendSections, alerts, thresholds, selectedId, setSelectedId, onExport }) {
+function ReportView({ trendSections, alerts, thresholds, selectedId, setSelectedId }) {
   const section = trendSections.find((s) => s.id === selectedId) || trendSections[0];
   const meta = PARAM_META[section.param];
   const relatedAlerts = alerts.filter((a) => Math.abs(((a.start + a.end) / 2) - section.center) < 3);
@@ -1180,7 +1180,7 @@ function ReportView({ trendSections, alerts, thresholds, selectedId, setSelected
   return (
     <div className="max-w-3xl mx-auto space-y-3">
       <Panel title="Select Section for Report" icon={FileText}>
-        <div className="p-3 flex flex-wrap gap-2">
+        <div className="p-3 flex flex-wrap gap-2 no-print">
           {trendSections.map((s) => (
             <button
               key={s.id} onClick={() => setSelectedId(s.id)}
@@ -1195,7 +1195,7 @@ function ReportView({ trendSections, alerts, thresholds, selectedId, setSelected
         </div>
       </Panel>
 
-      <div className="rounded-md border" style={{ background: C.panel, borderColor: C.border }}>
+      <div id="printable-report" className="rounded-md border" style={{ background: C.panel, borderColor: C.border }}>
         <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: C.border }}>
           <div>
             <div className="text-[11px] uppercase font-semibold tracking-widest" style={{ color: C.accent, fontFamily: FONT_MONO }}>Inspection Report</div>
@@ -1250,20 +1250,13 @@ function ReportView({ trendSections, alerts, thresholds, selectedId, setSelected
           </div>
         </div>
 
-        <div className="px-5 py-4 border-t flex justify-end gap-2" style={{ borderColor: C.border }}>
-          <button
-            onClick={onExport}
-            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-semibold"
-            style={{ background: C.accent, color: "#0A1520" }}
-          >
-            <Download size={14} /> Export PDF
-          </button>
+        <div className="px-5 py-4 border-t flex justify-end gap-2 no-print" style={{ borderColor: C.border }}>
           <button
             onClick={() => window.print && window.print()}
             className="flex items-center gap-2 px-4 py-2 rounded text-sm font-semibold"
-            style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
+            style={{ background: C.accent, color: "#0A1520" }}
           >
-            <Printer size={14} /> Print
+            <Printer size={14} /> Print / Save as PDF
           </button>
         </div>
       </div>
@@ -1611,7 +1604,7 @@ function DashboardInner() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 app-scroll-area">
           {view === "upload" && <UploadView onDatasetReady={handleDatasetReady} />}
           {view !== "upload" && !dataset && (
             <NoDatasetState onGoToIngest={() => setView("upload")} />
@@ -1640,7 +1633,6 @@ function DashboardInner() {
               <ReportView
                 trendSections={trendSections} alerts={alerts} thresholds={thresholds}
                 selectedId={selectedTrendId} setSelectedId={setSelectedTrendId}
-                onExport={() => setToast("Report generated — ready to download.")}
               />
             ) : (
               <EmptyTrendState />
