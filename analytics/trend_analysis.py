@@ -27,7 +27,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from thresholds import get_threshold, deviation, NOMINAL_GAUGE_MM, SPEED_CLASSES
+from .thresholds import get_threshold, deviation, NOMINAL_GAUGE_MM, SPEED_CLASSES
 
 DEFAULT_SPEED_CLASS = "B"
 MOVING_AVERAGE_WINDOW = 3

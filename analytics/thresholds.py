@@ -102,6 +102,29 @@ def get_threshold(parameter, speed_class="B"):
     }
 
 
+# Nominal broad-gauge track width in mm — kept for reference / for anyone
+# sourcing a real IRPWM gauge table later. NOT currently subtracted in
+# deviation() below, because the locked dataset (see data_format.md) already
+# stores `gauge` as a deviation-from-nominal value like the other five
+# parameters (sample rows are ~2-3mm, not ~1676mm), matching how
+# classify_severity() already treats every parameter uniformly.
+NOMINAL_GAUGE_MM = 1676.0
+
+
+def deviation(parameter, value):
+    """Normalize a raw CSV value into the same 'deviation magnitude' space
+    that classify_severity() already uses for alerting, so trend regression
+    (trend_analysis.py) and threshold alerting (alert_engine.py) agree on
+    what 'deviation' means for a given parameter.
+
+    railWear is a genuine absolute measurement (wear amount), so it's kept
+    signed/as-is. Every other locked parameter is already stored centered
+    at 0 in the current dataset, so only its magnitude matters here —
+    mirrors classify_severity()'s abs_value logic exactly.
+    """
+    return value if parameter == "railWear" else abs(value)
+
+
 def classify_severity(parameter, value, speed_class="B"):
     """Shared severity logic — Person 1 (frontend severity.js) must mirror this.
 

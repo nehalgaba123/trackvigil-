@@ -396,6 +396,8 @@ export function loadFromUpload(text, filename) {
       label: `Uploaded Dataset${filename ? ` (${filename})` : ""}`,
       note: "Anomaly detection and statistical trend analysis run against uploaded inspection data.",
       loadedAt: new Date().toISOString(),
+      filename: filename || "upload.csv",
+      rawText: text,
     },
   };
 }

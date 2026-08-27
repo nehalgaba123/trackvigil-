@@ -16,7 +16,7 @@ import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { ROLES, PERMISSIONS, hasPermission } from "./lib/roles";
 import RoleGate from "./components/RoleGate";
 import AuditLogPanel from "./components/AuditLogPanel";
-import { logAuditEvent } from "./lib/auditLog";
+import { logAuditEvent, saveAuditFile } from "./lib/auditLog";
 
 /* ============================================================================
    DESIGN TOKENS
@@ -877,7 +877,7 @@ function UploadView({ onDatasetReady }) {
                 // built-in sample/demo dataset doesn't touch production data and
                 // isn't logged.
                 if (result.meta.source !== "sample" && canUploadProduction) {
-                  logAuditEvent({
+                  const entry = logAuditEvent({
                     actor: user.name,
                     role: user.role,
                     action: "CERTIFY_DATA",
@@ -890,6 +890,17 @@ function UploadView({ onDatasetReady }) {
                     },
                     reason: `Certified as production dataset (${result.validation.validCount}/${result.validation.total} rows accepted).`,
                   });
+                  const saveResult = saveAuditFile(entry.id, result.meta.filename, result.meta.rawText);
+                  if (!saveResult.stored) {
+                    console.warn(`Audit file storage failed for ${result.meta.filename}: ${saveResult.reason}`);
+                    window.alert(
+                      `Dataset certified and logged, but the file itself couldn't be attached to the audit entry ` +
+                      `(${saveResult.reason}). This usually means browser storage is full from earlier test uploads — ` +
+                      `the CERTIFY_DATA log entry with row counts is still recorded, just without a downloadable copy.`
+                    );
+                  } else if (saveResult.evicted) {
+                    console.info(`Audit file store evicted older entries to make room for ${result.meta.filename}.`);
+                  }
                 }
                 onDatasetReady(result);
               }}

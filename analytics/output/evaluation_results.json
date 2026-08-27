@@ -1,0 +1,14 @@
+{
+  "validation_method": "no_ground_truth_available",
+  "limitations": "No engineer-confirmed defect labels were available for this dataset, so precision/recall CANNOT be computed and are not reported. Alert counts below are self-consistency checks only (threshold logic applied correctly, alerts trace back to specific values) \u2014 they do NOT demonstrate real-world accuracy.",
+  "self_consistency_checks": {
+    "total_alerts": 2782,
+    "critical_alerts": 427,
+    "warning_alerts": 2355,
+    "alerts_by_detection_type": {
+      "threshold": 616,
+      "anomaly": 2166
+    }
+  },
+  "recommended_next_step": "Obtain even a small set (e.g. 20-50 points) of engineer-confirmed defect/non-defect labels on real track sections to enable a genuine precision/recall evaluation."
+}

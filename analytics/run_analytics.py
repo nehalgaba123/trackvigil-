@@ -1,123 +1,73 @@
-import csv, json, sys
+import json, sys
 from pathlib import Path
-from .alert_engine import detect_alerts, detect_unresolved, group_alerts
-from .anomaly_detection import detect_anomalies
-from .trend_analysis import analyze_trends
-from .evaluate import evaluate_alerts
+
+# NOTE (integration fix): this file used to import helper functions
+# (detect_alerts, detect_unresolved, group_alerts, analyze_trends,
+# detect_anomalies, evaluate_alerts) that do not exist in the current
+# alert_engine.py / trend_analysis.py / anomaly_detection.py / evaluate.py
+# -- those modules were reworked at some point to each expose their own
+# self-contained run(csv_path, out_path, ...) that reads the CSV and
+# writes its own JSON file directly, rather than returning python objects
+# for an outer orchestrator to combine. This orchestrator was never
+# updated to match, so `python -m analytics.run_analytics` has never
+# actually completed -- analytics/output/ only ever had a stale
+# alerts.json from a separate stand-in script
+# (backend/scripts/build-analytics-output.js), not from this pipeline.
+#
+# Fix: call each module's real run() in the right order instead of
+# reimplementing their logic here. anomaly_detection runs first so its
+# output can be merged into alert_engine's alerts (see alert_engine.py's
+# merge_anomaly_alerts docstring -- anomalies are meant to stay distinct
+# from threshold alerts, not replace them).
+from . import alert_engine, anomaly_detection, trend_analysis, evaluate
 
 
-def load(path):
-    with open(path, newline='') as f:
-        return list(csv.DictReader(f))
-
-
-def build_priority(trends):
-    """Rank trend observations by urgency -- ENGINEERING-EVALUABLE CASES ONLY.
-
-    Integration fix: trend_analysis.analyze_trends() (unchanged) computes a
-    statistical trend_direction/degradation_rate for every row regardless of
-    evaluation_status, because that's descriptive statistics and doesn't
-    need a verified engineering threshold. But the *priority list* is a
-    maintenance-action ranking, and a row whose evaluation_status is
-    "context_required" or "not_evaluable" has no confirmed engineering
-    severity to act on -- ranking it here would misrepresent a statistical
-    observation as a confirmed maintenance priority. So this function now
-    first filters to evaluation_status == "evaluated" trends, then applies
-    the existing urgency ordering to that subset only:
-
-      Tier 1: already_at_or_beyond_critical (active confirmed breach).
-      Tier 2: current_severity == "warning".
-      Tier 3: has a valid, non-None estimated_days_to_critical (a genuine
-              engineering projection target existed -- see trend_analysis.py
-              / thresholds.py for when that's populated).
-      Tier 4: evaluated but none of the above (e.g. normal and stable/
-              improving/no projection) -- still evaluated, just not urgent.
-
-    Within Tier 3, smallest (soonest) estimated_days_to_critical first.
-
-    context_required / not_evaluable trends are excluded from this list
-    entirely -- they remain visible in trends.json (full, unfiltered) for
-    statistical/monitoring purposes, and the corresponding raw measurements
-    are captured with their reason in unresolved.json (see run()).
-
-    Each item keeps all of its original trend fields plus priority_rank.
+def run(csv_path, outdir, source_label="uploaded", speed_class="B", ground_truth_csv=None):
+    """Run the full analytics pipeline end to end and write every output
+    file the backend (analyticsService.js) and frontend expect:
+      alerts.json, trends.json, priority.json, anomalies.json,
+      evaluation_results.json
     """
-    evaluated = [t for t in trends if t.get('evaluation_status') == 'evaluated']
-
-    def tier(t):
-        if t.get('already_at_or_beyond_critical'):
-            return 1
-        if t.get('current_severity') == 'warning':
-            return 2
-        if t.get('estimated_days_to_critical') is not None:
-            return 3
-        return 4
-
-    # Stable string label per tier, for callers that want a human-readable
-    # reason without re-deriving it from the other fields. "not_urgent" is
-    # used for Tier 4 (evaluated but no active/predicted concern) rather
-    # than leaving it null, since a reason *is* meaningfully available --
-    # only context_required/not_evaluable rows (excluded above) lack one.
-    _REASON_BY_TIER = {
-        1: 'currently_critical',
-        2: 'warning_condition',
-        3: 'predicted_critical',
-        4: 'not_urgent',
-    }
-
-    ranked = sorted(
-        evaluated,
-        key=lambda t: (
-            tier(t),
-            t['estimated_days_to_critical'] if t.get('estimated_days_to_critical') is not None else float('inf'),
-        ),
-    )
-    return [
-        dict(t, priority_rank=i + 1, priority_reason=_REASON_BY_TIER[tier(t)])
-        for i, t in enumerate(ranked)
-    ]
-
-
-def run(path, outdir, context=None, track_class="standard", overrides=None):
-    """Run the full pipeline.
-
-    `context`, `track_class`, and `overrides` are optional and default to
-    the same conservative behavior as before this change (context=None ->
-    every row that needs context to evaluate stays context_required /
-    not_evaluable, exactly as it did previously). Passing a real context
-    dict lets confirmed alerts/priority entries be produced for parameters
-    where a verified threshold + supplied context make that possible (e.g.
-    twist at a verified speed band) -- nothing about the conservative
-    default behavior changes when context is omitted.
-    """
-    rows = load(path)
-    alerts = detect_alerts(rows, track_class=track_class, overrides=overrides, context=context)
-    unresolved = detect_unresolved(rows, track_class=track_class, overrides=overrides, context=context)
-    trends = analyze_trends(rows, track_class=track_class, overrides=overrides, context=context)
-    anomalies = detect_anomalies(rows)
-    priority = build_priority(trends)
-
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    for name, obj in [
-        ('alerts.json', {'alerts': alerts, 'groups': group_alerts(alerts)}),
-        ('unresolved.json', {'unresolved': unresolved}),
-        ('trends.json', {'trends': trends}),
-        ('priority.json', {'priority': priority}),
-        ('anomalies.json', {'anomalies': anomalies}),
-        ('evaluation_results.json', evaluate_alerts(alerts)),
-    ]:
-        (out / name).write_text(json.dumps(obj, indent=2))
+
+    anomalies_result = anomaly_detection.run(
+        csv_path, str(out / "anomalies.json"), source_label=source_label
+    )
+
+    alerts_result = alert_engine.run(
+        csv_path, str(out / "alerts.json"),
+        source_label=source_label, speed_class=speed_class,
+        anomaly_alerts=anomalies_result["anomalies"],
+    )
+
+    trends, priority = trend_analysis.run(
+        csv_path, str(out / "trends.json"), str(out / "priority.json"),
+        source_label=source_label, speed_class=speed_class,
+    )
+
+    evaluation_result = evaluate.run(
+        str(out / "alerts.json"), str(out / "evaluation_results.json"),
+        ground_truth_csv=ground_truth_csv,
+    )
 
     return {
-        'rows': len(rows),
-        'alerts': len(alerts),
-        'unresolved': len(unresolved),
-        'anomalies': len(anomalies),
-        'trends': len(trends),
-        'priority_records': len(priority),
+        "alerts": alerts_result["summary"]["total"],
+        "critical": alerts_result["summary"]["critical"],
+        "warning": alerts_result["summary"]["warning"],
+        "anomalies": len(anomalies_result["anomalies"]),
+        "trends": len(trends),
+        "priority_records": len(priority),
+        "evaluation_method": evaluation_result.get("validation_method"),
     }
 
 
-if __name__ == '__main__':
-    print(json.dumps(run(sys.argv[1], sys.argv[2]), indent=2))
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python -m analytics.run_analytics <csv_path> <outdir> [source_label] [speed_class]")
+        sys.exit(1)
+    csv_path = sys.argv[1]
+    outdir = sys.argv[2]
+    source_label = sys.argv[3] if len(sys.argv) > 3 else "uploaded"
+    speed_class = sys.argv[4] if len(sys.argv) > 4 else "B"
+    print(json.dumps(run(csv_path, outdir, source_label, speed_class), indent=2))

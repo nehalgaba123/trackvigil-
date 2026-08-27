@@ -17,7 +17,7 @@ import json
 import os
 from collections import defaultdict
 
-from thresholds import get_threshold, classify_severity, SPEED_CLASSES
+from .thresholds import get_threshold, classify_severity, SPEED_CLASSES
 
 DEFAULT_SPEED_CLASS = "B"
 
