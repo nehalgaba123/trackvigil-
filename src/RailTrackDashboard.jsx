@@ -417,20 +417,19 @@ function ParamChart({ param, readings, thresholds, focusChainage, onChartClick }
 /* ============================================================================
    ALERTS PANEL
    ============================================================================ */
-function AlertsPanel({ alerts, onSelect, focusChainage }) {
+function AlertsPanel({ alerts, onSelect, focusChainage, closedAlerts, onCloseAlert }) {
   const { user } = useAuth();
   const [severityFilter, setSeverityFilter] = useState("all");
-  const [closedIds, setClosedIds] = useState(new Set());
   const [sortBy, setSortBy] = useState("severity");
 
   const filtered = useMemo(() => {
     let list = alerts
-      .filter((a) => !closedIds.has(a.id))
+      .filter((a) => !closedAlerts[a.id])
       .filter((a) => severityFilter === "all" || a.sev === severityFilter);
     if (sortBy === "chainage") list = [...list].sort((a, b) => a.start - b.start);
     else list = [...list].sort((a, b) => (a.sev === b.sev ? a.start - b.start : a.sev === "critical" ? -1 : 1));
     return list;
-  }, [alerts, severityFilter, sortBy, closedIds]);
+  }, [alerts, severityFilter, sortBy, closedAlerts]);
 
   return (
     <Panel
@@ -506,7 +505,7 @@ function AlertsPanel({ alerts, onSelect, focusChainage }) {
                     target: `${a.param}@${fmt(a.start, 1)}-${fmt(a.end, 1)}`,
                     before: a.sev, after: "closed", reason,
                   });
-                  setClosedIds((prev) => new Set(prev).add(a.id));
+                  onCloseAlert(a, reason);
                 }}
                 className="w-full text-[10px] uppercase font-semibold py-1 rounded mt-1"
                 style={{ border: `1px solid ${C.border}`, color: C.textSecondary }}
@@ -920,7 +919,7 @@ function UploadView({ onDatasetReady }) {
 /* ============================================================================
    DASHBOARD VIEW
    ============================================================================ */
-function DashboardView({ readings, thresholds, focusChainage, setFocusChainage, alerts, clusters }) {
+function DashboardView({ readings, thresholds, focusChainage, setFocusChainage, alerts, clusters, closedAlerts, onCloseAlert }) {
   const reading = nearestReading(readings, focusChainage);
   return (
     <div className="space-y-3">
@@ -936,7 +935,7 @@ function DashboardView({ readings, thresholds, focusChainage, setFocusChainage, 
           <SectionDrillDown reading={reading} thresholds={thresholds} />
         </div>
         <div>
-          <AlertsPanel alerts={alerts} onSelect={setFocusChainage} focusChainage={focusChainage} />
+          <AlertsPanel alerts={alerts} onSelect={setFocusChainage} focusChainage={focusChainage} closedAlerts={closedAlerts} onCloseAlert={onCloseAlert} />
         </div>
       </div>
     </div>
@@ -1318,10 +1317,31 @@ const DIFF_GROUPS = [
   { key: "unresolved", label: "Unresolved (still flagged)", sevFor: (e) => e.to },
 ];
 
-function SnapshotComparisonView({ validRows, thresholds, onJump }) {
+// A snapshot diff row and a closed alert are different kinds of "resolved" —
+// this only tells you an engineer dismissed the alert, NOT that the value
+// went down (that's what "Recovered" already means, from real data). Used to
+// flag rows in Unresolved / Newly Critical / Newly Warning so it's visible
+// when a spot is still bad in the data despite being marked closed.
+function findClosedAlertAt(chainage, param, closedAlerts) {
+  return Object.values(closedAlerts).find(
+    (c) => c.param === param && chainage >= c.start - 1e-9 && chainage <= c.end + 1e-9
+  );
+}
+
+function SnapshotComparisonView({ validRows, thresholds, onJump, closedAlerts = {} }) {
   const dates = useMemo(() => getAvailableDates(validRows), [validRows]);
   const [dateA, setDateA] = useState(dates[0] || "");
   const [dateB, setDateB] = useState(dates[dates.length - 1] || "");
+
+  // Re-sync selected dates whenever the available date list changes (e.g. a
+  // new file is uploaded). Without this, dateA/dateB keep whatever string
+  // they were initialized with, which can silently stop matching any date
+  // in a newly-loaded dataset and make every diff group render empty.
+  useEffect(() => {
+    if (dates.length === 0) return;
+    setDateA((prev) => (dates.includes(prev) ? prev : dates[0]));
+    setDateB((prev) => (dates.includes(prev) ? prev : dates[dates.length - 1]));
+  }, [dates]);
 
   const diff = useMemo(() => {
     if (!dateA || !dateB || dateA === dateB) return null;
@@ -1367,13 +1387,26 @@ function SnapshotComparisonView({ validRows, thresholds, onJump }) {
             <div className="max-h-[320px] overflow-y-auto">
               <table className="w-full text-sm">
                 <tbody>
-                  {diff[key].map((e, i) => (
+                  {diff[key].map((e, i) => {
+                    const closed = key !== "recovered" ? findClosedAlertAt(e.chainage, e.param, closedAlerts) : null;
+                    return (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
-                      <td className="px-3 py-2" style={{ color: C.textPrimary }}>{PARAM_KEYS.includes(e.param) ? e.param : e.param}</td>
+                      <td className="px-3 py-2" style={{ color: C.textPrimary }}>{e.param}</td>
                       <td className="px-3 py-2" style={{ color: C.textSecondary, fontFamily: FONT_MONO }}>KM {e.chainage}</td>
                       <td className="px-3 py-2"><Badge sev={e.from}>{e.from}</Badge></td>
                       <td className="px-3 py-2 text-center" style={{ color: C.textDim }}>→</td>
                       <td className="px-3 py-2"><Badge sev={e.to}>{e.to}</Badge></td>
+                      <td className="px-3 py-2">
+                        {closed && (
+                          <span
+                            className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded"
+                            style={{ color: C.textSecondary, border: `1px solid ${C.border}` }}
+                            title={`Closed by alert dismissal: "${closed.reason}". Data still shows this as ${e.to} — no new inspection pass has confirmed a fix.`}
+                          >
+                            Closed (unconfirmed)
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <button onClick={() => onJump(e.chainage)}
                           className="text-xs px-2 py-1 rounded font-semibold"
@@ -1382,7 +1415,8 @@ function SnapshotComparisonView({ validRows, thresholds, onJump }) {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1418,6 +1452,38 @@ function DashboardInner() {
   const readings = dataset?.readings ?? [];
   const trendSections = dataset?.trendSections ?? [];
   const alerts = useMemo(() => (dataset ? (dataset.alerts ?? computeAlerts(readings, thresholds)) : []), [dataset, readings, thresholds]);
+
+  // Closed alerts, keyed by alert id -> { param, start, end, sev, reason, closedAt }.
+  // Lifted up here (rather than living inside AlertsPanel's own useState) so
+  // switching tabs — which unmounts AlertsPanel — doesn't wipe the closures.
+  // Persisted to localStorage so a page refresh doesn't lose them either.
+  // Snapshot Comparison also reads this, so it can flag a still-critical spot
+  // as "administratively closed" without pretending the track was repaired.
+  const CLOSED_ALERTS_KEY = "trackvigil_closed_alerts";
+  const [closedAlerts, setClosedAlerts] = useState(() => {
+    try {
+      const raw = localStorage.getItem(CLOSED_ALERTS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CLOSED_ALERTS_KEY, JSON.stringify(closedAlerts));
+    } catch {
+      // storage unavailable (private browsing, quota) — closures just won't
+      // survive a refresh; nothing else in the app depends on this succeeding.
+    }
+  }, [closedAlerts]);
+
+  const closeAlert = (alert, reason) => {
+    setClosedAlerts((prev) => ({
+      ...prev,
+      [alert.id]: { param: alert.param, start: alert.start, end: alert.end, sev: alert.sev, reason, closedAt: new Date().toISOString() },
+    }));
+  };
 
   const handleDatasetReady = (loaded) => {
     setDataset(loaded);
@@ -1555,11 +1621,12 @@ function DashboardInner() {
               readings={readings} thresholds={thresholds}
               focusChainage={focusChainage} setFocusChainage={setFocusChainage}
               alerts={alerts} clusters={trendSections}
+              closedAlerts={closedAlerts} onCloseAlert={closeAlert}
             />
           )}
           {view === "search" && dataset && <SearchView alerts={alerts} onJump={jumpToDashboard} />}
           {view === "snapshot" && dataset && (
-            <SnapshotComparisonView validRows={dataset.validRows ?? []} thresholds={thresholds} onJump={jumpToDashboard} />
+            <SnapshotComparisonView validRows={dataset.validRows ?? []} thresholds={thresholds} onJump={jumpToDashboard} closedAlerts={closedAlerts} />
           )}
           {view === "trend" && dataset && (
             trendSections.length > 0 ? (
