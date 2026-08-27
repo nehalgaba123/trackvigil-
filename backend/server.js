@@ -11,7 +11,7 @@ const performanceRoute = require('./src/routes/performance');
 const { getPriorityList } = require('./src/controllers/analyticsController');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Global middleware
 app.use(cors());
