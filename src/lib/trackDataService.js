@@ -45,6 +45,82 @@ export const CHAINAGE_START = 0;
 export const CHAINAGE_END = 60;
 export const STEP = 0.1; // 100m resolution, sample dataset only
 
+/* ---------------------------------------------------------------------------
+ * Single shared severity classifier — the >= critical / >= warning / else ok
+ * check used to be duplicated inline in buildSampleCsvText() and elsewhere.
+ * Everything that needs a severity tier (Dashboard, alerts, Snapshot
+ * Comparison) should call this instead of re-implementing the comparison.
+ * ------------------------------------------------------------------------- */
+export function classifySeverity(param, value, thresholds = DEFAULT_THRESHOLDS) {
+  const t = thresholds[param];
+  if (!t || value === undefined || value === null || Number.isNaN(value)) return null;
+  if (value >= t.critical) return "critical";
+  if (value >= t.warning) return "warning";
+  return "ok";
+}
+
+/* ---------------------------------------------------------------------------
+ * Distinct dates present in a set of validated long-format rows, sorted
+ * ascending. Needed by Snapshot Comparison's two date pickers — nothing
+ * before this exposed the dataset's available dates as a standalone list.
+ * ------------------------------------------------------------------------- */
+export function getAvailableDates(validRows) {
+  return Array.from(new Set(validRows.map((r) => r.date))).sort();
+}
+
+/* ---------------------------------------------------------------------------
+ * PUBLIC: computeSnapshotDiff(validRows, dateA, dateB, thresholds)
+ * Track-wide diff between two dates: for every (chainage, parameter) that
+ * has a reading on both dates, classify severity on each and report where
+ * the TIER changed (ok/warning/critical crossing) — not raw value drift.
+ * Reuses classifySeverity() rather than a third copy of the threshold check.
+ * ------------------------------------------------------------------------- */
+export function computeSnapshotDiff(validRows, dateA, dateB, thresholds = DEFAULT_THRESHOLDS) {
+  const key = (c, p) => `${c}|${p}`;
+  const atDate = new Map();
+  validRows.forEach((r) => {
+    if (r.date !== dateA && r.date !== dateB) return;
+    const k = key(r.chainage, r.parameter);
+    if (!atDate.has(k)) atDate.set(k, {});
+    atDate.get(k)[r.date] = r.value;
+  });
+
+  const newlyCritical = [];
+  const newlyWarning = [];
+  const recovered = [];
+  const unresolved = [];
+
+  atDate.forEach((byDate, k) => {
+    if (!(dateA in byDate) || !(dateB in byDate)) return; // needs both dates
+    const [chainage, param] = k.split("|");
+    const from = classifySeverity(param, byDate[dateA], thresholds);
+    const to = classifySeverity(param, byDate[dateB], thresholds);
+    if (!from || !to || from === to) {
+      if (from === to && (from === "critical" || from === "warning")) {
+        unresolved.push({ chainage: +chainage, param, from, to, valueA: byDate[dateA], valueB: byDate[dateB] });
+      }
+      return;
+    }
+    const entry = { chainage: +chainage, param, from, to, valueA: byDate[dateA], valueB: byDate[dateB] };
+    const rank = { ok: 0, warning: 1, critical: 2 };
+    if (rank[to] > rank[from]) {
+      (to === "critical" ? newlyCritical : newlyWarning).push(entry);
+    } else {
+      recovered.push(entry);
+    }
+  });
+
+  const byChainage = (a, b) => a.chainage - b.chainage;
+  return {
+    dateA,
+    dateB,
+    newlyCritical: newlyCritical.sort(byChainage),
+    newlyWarning: newlyWarning.sort(byChainage),
+    recovered: recovered.sort(byChainage),
+    unresolved: unresolved.sort(byChainage),
+  };
+}
+
 // Metadata for the sample dataset's deliberately-injected breach sections.
 // Used only to label sample data (zone name, description) — the actual
 // numeric values still come from parsing the generated CSV, not from here.
@@ -367,6 +443,7 @@ export function loadSampleDataset() {
   return {
     readings,
     trendSections,
+    validRows: valid,
     validation: { total, validCount: valid.length, invalidCount: invalid.length, invalidRows: invalid },
     meta: {
       source: "sample",
@@ -390,6 +467,7 @@ export function loadFromUpload(text, filename) {
   return {
     readings,
     trendSections,
+    validRows: valid,
     validation: { total, validCount: valid.length, invalidCount: invalid.length, invalidRows: invalid },
     meta: {
       source: "upload",
@@ -508,6 +586,7 @@ export async function loadFromApi(baseUrl = API_BASE_URL) {
   return {
     readings,
     trendSections,
+    validRows,
     alerts,
     validation: { total: validRows.length, validCount: validRows.length, invalidCount: 0, invalidRows: [] },
     meta: {

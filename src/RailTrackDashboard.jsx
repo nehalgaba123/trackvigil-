@@ -11,6 +11,7 @@ import {
 import {
   PARAM_KEYS, DEFAULT_THRESHOLDS, CHAINAGE_START, CHAINAGE_END, STEP,
   loadSampleDataset, loadFromUpload, loadFromApi,
+  getAvailableDates, computeSnapshotDiff,
 } from "./lib/trackDataService";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { ROLES, PERMISSIONS, hasPermission } from "./lib/roles";
@@ -1301,11 +1302,103 @@ function EmptyTrendState() {
   );
 }
 
+/* ============================================================================
+   SNAPSHOT COMPARISON VIEW
+   Track-wide diff between two dates in the dataset — separate from Trend
+   Projection, which follows one section over time. This follows the whole
+   60km between exactly two passes: what got worse, what recovered, what's
+   still unresolved. Reuses computeSnapshotDiff() from trackDataService.js
+   (which itself reuses classifySeverity(), not a new threshold check) and
+   the same jumpToDashboard() every other view already uses for navigation.
+   ============================================================================ */
+const DIFF_GROUPS = [
+  { key: "newlyCritical", label: "Newly critical", sevFor: () => "critical" },
+  { key: "newlyWarning", label: "Newly warning", sevFor: () => "warning" },
+  { key: "recovered", label: "Recovered", sevFor: () => "ok" },
+  { key: "unresolved", label: "Unresolved (still flagged)", sevFor: (e) => e.to },
+];
+
+function SnapshotComparisonView({ validRows, thresholds, onJump }) {
+  const dates = useMemo(() => getAvailableDates(validRows), [validRows]);
+  const [dateA, setDateA] = useState(dates[0] || "");
+  const [dateB, setDateB] = useState(dates[dates.length - 1] || "");
+
+  const diff = useMemo(() => {
+    if (!dateA || !dateB || dateA === dateB) return null;
+    return computeSnapshotDiff(validRows, dateA, dateB, thresholds);
+  }, [validRows, dateA, dateB, thresholds]);
+
+  if (dates.length < 2) {
+    return (
+      <div className="max-w-md mx-auto mt-16 text-center">
+        <ArrowLeftRight size={28} color={C.textDim} className="mx-auto mb-3" />
+        <p className="text-sm" style={{ color: C.textSecondary }}>Not enough dates to compare.</p>
+        <p className="text-xs mt-1" style={{ color: C.textDim }}>Snapshot Comparison needs 2+ distinct dates in the dataset.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <Panel title="Compare two dates" icon={ArrowLeftRight}>
+        <div className="p-3 flex items-center gap-3">
+          <select value={dateA} onChange={(e) => setDateA(e.target.value)}
+            className="rounded px-2 py-1.5 text-sm outline-none"
+            style={{ background: C.bgRaised, border: `1px solid ${C.border}`, color: C.textPrimary, fontFamily: FONT_MONO }}>
+            {dates.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <span style={{ color: C.textDim }}>vs</span>
+          <select value={dateB} onChange={(e) => setDateB(e.target.value)}
+            className="rounded px-2 py-1.5 text-sm outline-none"
+            style={{ background: C.bgRaised, border: `1px solid ${C.border}`, color: C.textPrimary, fontFamily: FONT_MONO }}>
+            {dates.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          {dateA === dateB && (
+            <span className="text-xs" style={{ color: C.textDim }}>Pick two different dates.</span>
+          )}
+        </div>
+      </Panel>
+
+      {diff && DIFF_GROUPS.map(({ key, label }) => (
+        <Panel key={key} title={`${label} (${diff[key].length})`} icon={ArrowLeftRight}>
+          {diff[key].length === 0 ? (
+            <p className="px-3 py-4 text-xs" style={{ color: C.textDim }}>None.</p>
+          ) : (
+            <div className="max-h-[320px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <tbody>
+                  {diff[key].map((e, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td className="px-3 py-2" style={{ color: C.textPrimary }}>{PARAM_KEYS.includes(e.param) ? e.param : e.param}</td>
+                      <td className="px-3 py-2" style={{ color: C.textSecondary, fontFamily: FONT_MONO }}>KM {e.chainage}</td>
+                      <td className="px-3 py-2"><Badge sev={e.from}>{e.from}</Badge></td>
+                      <td className="px-3 py-2 text-center" style={{ color: C.textDim }}>→</td>
+                      <td className="px-3 py-2"><Badge sev={e.to}>{e.to}</Badge></td>
+                      <td className="px-3 py-2 text-right">
+                        <button onClick={() => onJump(e.chainage)}
+                          className="text-xs px-2 py-1 rounded font-semibold"
+                          style={{ color: C.accent, border: `1px solid ${C.accentDim}` }}>
+                          View <ChevronRight size={11} className="inline" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
 const NAV = [
   { id: "upload", label: "Ingest", icon: UploadCloud },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "search", label: "Global Search", icon: Search },
   { id: "trend", label: "Trend Projection", icon: TrendingUp },
+  { id: "snapshot", label: "Snapshot Comparison", icon: ArrowLeftRight },
   { id: "report", label: "Report", icon: FileText },
 ];
 
@@ -1465,6 +1558,9 @@ function DashboardInner() {
             />
           )}
           {view === "search" && dataset && <SearchView alerts={alerts} onJump={jumpToDashboard} />}
+          {view === "snapshot" && dataset && (
+            <SnapshotComparisonView validRows={dataset.validRows ?? []} thresholds={thresholds} onJump={jumpToDashboard} />
+          )}
           {view === "trend" && dataset && (
             trendSections.length > 0 ? (
               <TrendView trendSections={trendSections} thresholds={thresholds} selectedId={selectedTrendId} setSelectedId={setSelectedTrendId} />
