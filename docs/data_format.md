@@ -4,13 +4,10 @@ This is the **single source of truth** for field names, formats, and thresholds
 across the pipeline. If your module doesn't match this doc, it's wrong — fix
 your module, don't fix the doc without telling the team.
 
-Status as of Aug 22 (updated, Person 5): repo (`trackvigil--main`) contains
-the Person 1 frontend, `docs/`, `tests/`, and `results/`. The frontend is
-**no longer mock-only** — CSV upload works against the locked schema below,
-and the Dashboard, Trend Projection, and Report views all run against real
-uploaded historical multi-date data (verified with the 43,272-row,
-12-date `cleaned_data.csv`). `backend/`, `data/`, `analytics/` still do not
-exist at repo root as of this update — no API, no server-side analytics yet.
+Status as of Aug 22: repo (`trackvigil--main`) currently contains **only the
+Person 1 frontend prototype**, running entirely on in-browser mock data
+(`generateDataset()` in `RailTrackDashboard.jsx`). `backend/`, `data/`,
+`analytics/`, `tests/`, `docs/` do not exist yet at repo root.
 
 ---
 
@@ -23,11 +20,33 @@ chainage,date,parameter,value
 | Field       | Type          | Notes                                      |
 |-------------|---------------|---------------------------------------------|
 | `chainage`  | float (km)    | e.g. `41.2`                                 |
-| `date`      | ISO 8601 date | `YYYY-MM-DD` — confirm with Person 3         |
+| `date`      | ISO 8601 date | `YYYY-MM-DD`                                |
 | `parameter` | string        | one of the 6 locked parameter names below   |
 | `value`     | float (mm)    | deviation/measurement, unit = mm            |
 
-No other columns. No wide format. Long format only.
+Core schema is these 4 fields. No wide format. Long format only.
+
+**Amendment (as of latest sync):** an optional 5th column, `alert`, has
+started appearing in `cleaned_data.csv` — values `ok` / `warning` /
+`critical`, a per-row ground-truth severity label generated alongside the
+data. **This is a real contract change and needs full team sign-off** —
+flagging it here now since it was added without being documented first
+(see §11, "any intentional contract change must be documented and
+communicated before dependent code is changed").
+
+This column is currently being used as a **temporary stand-in** for real
+alert generation: `backend/scripts/build-analytics-output.js` reads this
+label directly and writes `analytics/output/alerts.json` from it, rather
+than computing severity from thresholds. **This means alerts currently
+shown on the dashboard reflect this pre-existing label, not live output
+from `analytics/alert_engine.py`** (which cannot run yet — see §12).
+Useful side benefit: this gives `evaluate.py` real ground truth to
+validate against, if this label is trustworthy — but the team needs to
+explicitly decide: (a) is `alert` a permanent 5th schema field or a
+temporary generation artifact, (b) is it meant as ground truth for
+`evaluate.py`, or as production alerting, or both, and (c) should
+Person 4's `alert_engine.py` eventually replace this stand-in entirely
+once its import bugs are fixed.
 
 ## 2. Locked parameter names
 
@@ -42,13 +61,23 @@ crossLevel
 railWear
 ```
 
-(Confirmed as of the current frontend prototype — these exact keys are
-already used in `RailTrackDashboard.jsx`'s `PARAMS` object.)
+Do not introduce alternatives such as `cross_level`, `rail_wear`,
+`crosslevel`. If an external dataset uses different names, handle the
+mapping in the appropriate API/data-ingestion layer only.
 
-## 3. Thresholds (must match between Person 1 and Person 4)
+## 3. Gauge — special case
 
-**Currently hardcoded in the frontend prototype** (`THRESHOLDS` object,
-`RailTrackDashboard.jsx`) — units = mm, presumably deviation from nominal:
+`gauge` is **deviation from the 1676mm nominal broad-gauge value**, not an
+absolute measurement. A value of `3.2` means 3.2mm deviation, not a gauge
+width of 3.2mm. If any raw/external data source gives absolute gauge
+measurements, that conversion to deviation must happen in the
+ingestion/API layer — never left for the frontend or analytics to assume.
+This interpretation is locked; changing it requires team approval.
+
+## 4. Thresholds — LOCKED default values (team-agreed, not a placeholder)
+
+These are the official default thresholds, confirmed by the team rules
+(matches what was already in the frontend prototype):
 
 | Parameter    | Warning | Critical |
 |--------------|---------|----------|
@@ -59,21 +88,65 @@ already used in `RailTrackDashboard.jsx`'s `PARAMS` object.)
 | crossLevel   | 6       | 10       |
 | railWear     | 8       | 12       |
 
-**Action needed:** Person 4 must validate these against IRPWM (or cite a
-different official source) and confirm whether track/speed class matters. If
-Person 4's sourced values differ from the table above, **the frontend values
-must be updated to match** — don't let these silently diverge. Whoever
-changes this table must ping the team.
+These are locked as the working defaults for backend/analytics/tests. A
+**separate task still remains**: `docs/threshold_validation.md` needs to
+document the IRPWM (or other official) source backing each number, and
+note whether track/speed class changes any of them. That's about sourcing
+justification, not about changing these numbers without team sign-off.
 
-## 4. Severity logic (must match between Person 1 and Person 4)
+## 5. Severity logic — LOCKED
 
-Frontend currently classifies severity as: value < warning → normal,
-warning ≤ value < critical → warning, value ≥ critical → critical
-(see `getSeverity()` in `RailTrackDashboard.jsx`). Person 4's
-`alert_engine.py` must implement the same boundary logic (confirm ≥ vs >
-at the edges — easy place for an off-by-one mismatch).
+```
+value >= critical → "critical"
+value >= warning  → "warning"
+otherwise         → "ok"
+```
 
-## 5. API contract (must match between Person 1 and Person 2)
+**Both boundaries are inclusive (`>=`)** — a value exactly equal to the
+critical threshold counts as critical, not warning. Backend, analytics,
+and tests must all implement this exact boundary logic — no separate
+severity rules in different files.
+
+## 6. Chainage — LOCKED
+
+- Prototype range: **0–60 km**
+- Prototype resolution: **100m (0.1 km) steps**
+- No silent resampling, interpolation, rounding, or modification of
+  chainage values anywhere in the pipeline. If real data has irregular
+  spacing, that's a data-processing contract decision for the team, not
+  something any one module decides on its own.
+
+## 7. Dates & trends — LOCKED
+
+- `date` is part of the schema and is required on every row.
+- The main dashboard shows a **single current snapshot** — not a
+  time series view.
+- Trend/history views use an agreed aggregation format (still needs to be
+  finalized — flag to the team if unclear, don't guess).
+- Do not implement separate/independent date-aggregation logic in more
+  than one file — one shared implementation only.
+
+**Known blocker:** `cleaned_data.csv` (shared by Person 3) currently has
+only **one date** for all rows. Trend/rate-of-degradation calculations
+need multiple dates per chainage to compute a slope — this can't work off
+a single snapshot. Needs resolution with Person 3/4.
+
+## 8. Server-side alert object structure — LOCKED
+
+```js
+{
+  param: "gauge",   // one of the 6 locked parameter names
+  start: 12.1,      // chainage (km) where the breached run starts
+  end: 12.7,        // chainage (km) where the breached run ends
+  peak: 9.4,        // worst value within the breached run
+  sev: "critical"   // "warning" or "critical"
+}
+```
+
+Alerts represent **contiguous runs** of breached readings for the same
+parameter — not one alert per individual reading.
+
+## 9. API contract (must match between Person 1 and Person 2)
 
 Locked routes (Person 2 owns implementation, Person 1 consumes):
 
@@ -89,23 +162,7 @@ to be written down the moment Person 2 has a working stub — even with fake
 data — so Person 1 isn't reverse-engineering it from network tab.
 *(Placeholder — fill in once Person 2 shares response shapes.)*
 
-## 5b. Trend/history data (frontend, current state)
-
-`src/lib/trackDataService.js` now supports generic uploaded historical
-trends: uploading a CSV with multiple `date` values for the same
-`chainage`/`parameter` drives the Trend Projection and Report views,
-not just a fixed set of hardcoded demo sections. Confirmed working
-against `cleaned_data.csv` (601 chainage points × 12 dates).
-
-**Not yet re-verified by Person 5 at the code level** — this entry
-reflects what the team has reported as working, not a line-by-line
-review of the updated `trackDataService.js` (out of scope for this
-doc/test pass per team rules — `src/` is Person 1's folder). If the
-exact trend calculation (moving average / regression / other) needs to
-be documented precisely, that should come from Person 1 directly so
-this doc doesn't guess at someone else's implementation.
-
-## 6. Pipeline
+## 10. Pipeline
 
 ```
 Person 3: railway_data.csv (raw)
@@ -133,29 +190,60 @@ Backend-shaped JSON (Person 2)
 Frontend-compatible format (matches what Person 1's components expect)
 ```
 
-## 7. Open items / known gaps (as of Aug 22)
+## 11. General integration rules (apply to all backend/analytics/test code)
 
-- [x] `tests/`, `docs/`, `results/` folders exist and are populated
-      (this doc, architecture, demo plan, integration checklist,
-      benchmark/scalability scripts, benchmark/scalability results).
-- [ ] `backend/`, `data/`, `analytics/` folders still not created at
-      repo root — no live API, no server-side alert/trend engine yet.
-      Frontend currently does its own CSV parsing + trend logic
-      client-side (`src/lib/trackDataService.js`) as a stand-in.
-- [x] Frontend CSV upload now works against this locked schema —
-      Dashboard, Trend Projection, and Report views all run against
-      uploaded historical multi-date data, not just `generateDataset()`
-      mock data. Mock data is now a fallback, not the only path.
-- [ ] `MaintenancePriorityList.jsx` not built yet (Person 1 task, spec'd
-      in team rules doc).
-- [ ] No data-source/status indicator in UI yet (real vs. fallback/demo
-      data) — required for judges.
-- [x] `date` format confirmed 2026-08-22: `YYYY-MM-DD`, 12 distinct
-      monthly dates present in the shared `cleaned_data.csv`
-      (2025-10-19 → 2026-09-25) — trend calculations are **not** blocked
-      the way this doc previously assumed. **Flag for Person 3:** the
-      newest date (2026-09-25) is after today — confirm intentional.
-- [ ] `/tracks`, `/alerts`, `/analytics`, `/priority` response shapes not
-      yet documented — TODO once Person 2 has a stub.
-- [ ] Thresholds table above needs IRPWM validation from Person 4 —
-      currently just what's hardcoded in frontend mock data.
+- Never silently change the data contract or API response structure.
+- Never rename fields just to make your own code easier to write.
+- Never duplicate the same transformation/mapping/conversion logic in
+  more than one place (backend, analytics, frontend).
+- Check existing docs/code before changing an API, schema, field name,
+  threshold, or data interpretation.
+- Reuse existing constants/utilities/validation instead of rewriting.
+- If something about the contract is unclear — **flag it to the team,
+  don't guess.**
+- Any intentional contract change must be documented here and
+  communicated to the team **before** dependent code is changed.
+
+## 12. Open items / known gaps (latest sync)
+
+**Resolved since last update:**
+- [x] `backend/`, `data/`, `analytics/`, `tests/`, `docs/` folders all
+      exist now.
+- [x] Data-source indicator live in UI ("Sample/Demo" vs "Uploaded Data").
+- [x] `data/processed/cleaned_data.csv` exists (43,272 rows, 12 monthly
+      dates, real chainage/date spread) — multi-date blocker resolved.
+- [x] Backend/frontend port mismatch fixed (both on 5001).
+
+**Still open / newly found:**
+- [ ] **`analytics/run_analytics.py` still cannot run** — imports
+      function names (`detect_alerts`, `analyze_trends`, etc.) that
+      don't exist in `alert_engine.py`/`trend_analysis.py`/`evaluate.py`.
+      `trend_analysis.py` also independently fails to import
+      (`deviation`, `NOMINAL_GAUGE_MM` referenced but never defined in
+      `thresholds.py`). Even Person 4's own `test_person4.py` doesn't
+      match the delivered code — expects a `context`-based
+      `evaluate_parameter()` that doesn't exist anywhere. Needs Person 4
+      to reconcile — possibly a newer local version was never pushed.
+- [ ] **Dashboard alerts are currently sourced from the CSV's new
+      `alert` label column (see §1 amendment), not from
+      `analytics/alert_engine.py`.** This needs to be communicated
+      clearly for demo/interview honesty — don't describe alerts as
+      "computed by our rule engine" until that engine actually runs.
+- [ ] **`pickCurrentDate()` in `trackDataService.js` still has the
+      original bug** (breaks date ties by first-seen, not by latest
+      date) — inconsistent with the new `build-analytics-output.js`
+      script, which correctly picks the latest date. Only affects the
+      manual-upload path for now, but should be fixed for consistency.
+- [ ] Threshold values in `analytics/thresholds.py` still don't match
+      the locked table above for 4 of 6 parameters (see §4) — unresolved.
+- [ ] Alert object shape from `alert_engine.py` still doesn't match the
+      locked `{param, start, end, peak, sev}` format (see §8) —
+      unresolved (though `build-analytics-output.js`'s stand-in output
+      does match the locked shape correctly).
+- [ ] `MaintenancePriorityList.jsx` not built yet.
+- [ ] `/tracks`, `/alerts`, `/analytics`, `/priority` response shapes
+      still not formally documented.
+- [ ] `docs/threshold_validation.md` — IRPWM sourcing still not written.
+- [ ] Data values look unusually far past critical thresholds (e.g.
+      unevenness 28mm vs 13mm critical) — confirm with Person 3 whether
+      intentional (worst-case demo section) or a generator issue.
