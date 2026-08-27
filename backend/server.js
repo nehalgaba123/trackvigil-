@@ -2,13 +2,13 @@ const express = require('express');
 const cors = require('cors');
 
 // Route modules
-const tracksRoute = require('./routes/tracks');
-const alertsRoute = require('./routes/alerts');
-const analyticsRoute = require('./routes/analytics');
-const performanceRoute = require('./routes/performance');
+const tracksRoute = require('./src/routes/tracks');
+const alertsRoute = require('./src/routes/alerts');
+const analyticsRoute = require('./src/routes/analytics');
+const performanceRoute = require('./src/routes/performance');
 
 // Controllers for root-level direct mounts
-const { getPriorityList } = require('./controllers/analyticsController');
+const { getPriorityList } = require('./src/controllers/analyticsController');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
